@@ -1,0 +1,185 @@
+app:
+  host: "127.0.0.1"
+  port: 8765
+  timezone: "Asia/Shanghai"
+  database_url: "sqlite:///data/xhs_agent.db"
+
+browser:
+  type: "chromium"
+  channel: "msedge"
+  headless: false
+  slow_mo_ms: 300
+  screenshots_dir: "data/screenshots"
+  dry_run: true
+  publish_url: "https://creator.xiaohongshu.com/publish/publish"
+
+ai:
+  default_provider: "mock"
+  providers:
+    mock:
+      base_url: ""
+      model: "mock-v1"
+      api_key_env: ""
+    deepseek:
+      base_url: "https://api.deepseek.com"
+      model: "deepseek-chat"
+      api_key_env: "DEEPSEEK_API_KEY"
+      timeout_seconds: 60
+      supports_json_mode: true
+    glm:
+      base_url: "https://open.bigmodel.cn/api/paas/v4"
+      model: "glm-4"
+      api_key_env: "GLM_API_KEY"
+      timeout_seconds: 60
+      supports_json_mode: true
+    openai_compatible:
+      base_url: "https://api.example.com/v1"
+      model: "replace-with-model-name"
+      api_key_env: "OPENAI_COMPATIBLE_API_KEY"
+      timeout_seconds: 60
+      supports_json_mode: true
+  presets:
+    openai:
+      display_name: "OpenAI"
+      provider_type: "chat_completions"
+      default_base_url: "https://api.openai.com/v1"
+      api_key_env: "OPENAI_API_KEY"
+      example_models: ["gpt-5.5", "gpt-5.4", "gpt-5.4-mini"]
+    anthropic:
+      display_name: "Anthropic Claude"
+      provider_type: "anthropic_messages"
+      default_base_url: "https://api.anthropic.com"
+      api_key_env: "ANTHROPIC_API_KEY"
+      example_models: ["claude-opus", "claude-sonnet", "claude-haiku"]
+      supports_json_mode: false
+    gemini:
+      display_name: "Google Gemini"
+      provider_type: "gemini"
+      default_base_url: "https://generativelanguage.googleapis.com"
+      api_key_env: "GEMINI_API_KEY"
+      example_models: ["gemini-pro", "gemini-flash"]
+    xai:
+      display_name: "xAI Grok"
+      provider_type: "chat_completions"
+      default_base_url: "https://api.x.ai/v1"
+      api_key_env: "XAI_API_KEY"
+      example_models: ["grok"]
+    deepseek:
+      display_name: "DeepSeek"
+      provider_type: "chat_completions"
+      default_base_url: "https://api.deepseek.com"
+      api_key_env: "DEEPSEEK_API_KEY"
+      example_models: ["deepseek-chat", "deepseek-reasoner"]
+    glm:
+      display_name: "智谱 GLM / BigModel"
+      provider_type: "chat_completions"
+      default_base_url: "https://open.bigmodel.cn/api/paas/v4"
+      api_key_env: "GLM_API_KEY"
+      example_models: ["glm-4", "glm-4-plus", "glm-z1"]
+    qwen_dashscope:
+      display_name: "阿里 Qwen / DashScope"
+      provider_type: "chat_completions"
+      default_base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1"
+      api_key_env: "DASHSCOPE_API_KEY"
+      example_models: ["qwen-plus", "qwen-turbo", "qwen-max"]
+    moonshot_kimi:
+      display_name: "Moonshot / Kimi"
+      provider_type: "chat_completions"
+      default_base_url: "https://api.moonshot.ai/v1"
+      api_key_env: "MOONSHOT_API_KEY"
+      example_models: ["kimi-latest", "kimi-k2", "moonshot-v1"]
+    doubao_ark:
+      display_name: "火山引擎 / Doubao / Ark"
+      provider_type: "chat_completions"
+      default_base_url: "https://ark.cn-beijing.volces.com/api/v3"
+      api_key_env: "ARK_API_KEY"
+      example_models: ["doubao"]
+    minimax:
+      display_name: "MiniMax"
+      provider_type: "chat_completions"
+      default_base_url: "https://api.minimax.chat/v1"
+      api_key_env: "MINIMAX_API_KEY"
+      example_models: ["minimax"]
+    baidu_qianfan:
+      display_name: "百度文心 / 千帆"
+      provider_type: "custom_http"
+      default_base_url: "https://qianfan.baidubce.com"
+      api_key_env: "QIANFAN_API_KEY"
+      example_models: ["自由填写 model_id"]
+      supports_json_mode: false
+    openrouter:
+      display_name: "OpenRouter"
+      provider_type: "chat_completions"
+      default_base_url: "https://openrouter.ai/api/v1"
+      api_key_env: "OPENROUTER_API_KEY"
+      example_models: ["openai/gpt", "anthropic/claude", "google/gemini", "deepseek/deepseek"]
+    siliconflow:
+      display_name: "SiliconFlow"
+      provider_type: "chat_completions"
+      default_base_url: "https://api.siliconflow.cn/v1"
+      api_key_env: "SILICONFLOW_API_KEY"
+      example_models: ["deepseek-ai/DeepSeek", "Qwen/Qwen", "zai-org/GLM"]
+    ollama:
+      display_name: "Ollama"
+      provider_type: "ollama"
+      default_base_url: "http://127.0.0.1:11434"
+      api_key_env: ""
+      example_models: ["qwen", "llama", "deepseek-r1"]
+      supports_json_mode: true
+    lm_studio:
+      display_name: "LM Studio"
+      provider_type: "chat_completions"
+      default_base_url: "http://127.0.0.1:1234/v1"
+      api_key_env: ""
+      example_models: ["local-model"]
+    openmodel:
+      display_name: "OpenModel / 第三方聚合平台"
+      provider_type: "chat_completions"
+      default_base_url: "https://api.openmodel.ai"
+      api_key_env: "OPENMODEL_API_KEY"
+      example_models: ["自由填写模型 ID"]
+
+publish:
+  require_review: true
+  default_schedule_enabled: false
+  default_publish_times:
+    - "10:30"
+    - "20:30"
+
+interaction:
+  enabled: true
+  allowed_work_hours:
+    start: "09:30"
+    end: "23:00"
+  daily_like_limit: 30
+  daily_comment_limit: 10
+  daily_dm_reply_limit: 30
+  min_delay_seconds: 30
+  max_delay_seconds: 180
+  interest_keywords:
+    - "人工智能"
+    - "AI"
+    - "计算机"
+    - "编程"
+    - "科技"
+  blacklist_keywords: []
+  sensitive_keywords:
+    - "政治"
+    - "医疗"
+    - "法律"
+    - "投资"
+    - "理财"
+    - "色情"
+    - "未成年人"
+    - "账号交易"
+    - "违法"
+  default_sensitive_reply: "这个问题我暂时不方便直接判断，建议你参考官方说明或咨询专业人士。"
+
+notifications:
+  windows_toast_enabled: true
+  feishu_enabled: false
+
+feishu:
+  app_id_env: "FEISHU_APP_ID"
+  app_secret_env: "FEISHU_APP_SECRET"
+  verification_token_env: "FEISHU_VERIFICATION_TOKEN"

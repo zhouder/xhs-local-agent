@@ -1,0 +1,29 @@
+from __future__ import annotations
+
+from copy import deepcopy
+
+import pytest
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
+from sqlalchemy.pool import StaticPool
+
+from app.config import get_settings
+from app.database import Base
+from app import models  # noqa: F401
+
+
+@pytest.fixture
+def db():
+    engine = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
+    Base.metadata.create_all(engine)
+    session = sessionmaker(bind=engine, expire_on_commit=False)()
+    try:
+        yield session
+    finally:
+        session.close()
+        Base.metadata.drop_all(engine)
+
+
+@pytest.fixture
+def settings():
+    return get_settings().model_copy(update={"interaction": deepcopy(get_settings().interaction), "ai": deepcopy(get_settings().ai)}, deep=True)

@@ -1,0 +1,59 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://local.invalid/xhs-agent/internal-schemas.json",
+  "$defs": {
+    "SafetyResult": {
+      "type": "object",
+      "required": ["is_safe", "reason", "matched_keywords"],
+      "properties": {
+        "is_safe": {"type": "boolean"},
+        "reason": {"type": "string"},
+        "matched_keywords": {"type": "array", "items": {"type": "string"}}
+      },
+      "additionalProperties": false
+    },
+    "MediaRequirements": {
+      "type": "object",
+      "required": ["type", "count", "description"],
+      "properties": {
+        "type": {"enum": ["image", "video"]},
+        "count": {"type": "integer", "minimum": 1, "maximum": 20},
+        "description": {"type": "string"}
+      },
+      "additionalProperties": false
+    },
+    "NoteContent": {
+      "type": "object",
+      "required": ["title", "body", "hashtags", "cover_prompt", "media_requirements", "safety"],
+      "properties": {
+        "title": {"type": "string", "minLength": 1, "maxLength": 100},
+        "body": {"type": "string", "minLength": 1},
+        "hashtags": {"type": "array", "items": {"type": "string"}},
+        "cover_prompt": {"type": "string"},
+        "media_requirements": {"$ref": "#/$defs/MediaRequirements"},
+        "safety": {"$ref": "#/$defs/SafetyResult"}
+      },
+      "additionalProperties": false
+    },
+    "PolicyDecision": {
+      "type": "object",
+      "required": ["allowed", "reason", "use_safe_template"],
+      "properties": {
+        "allowed": {"type": "boolean"},
+        "reason": {"type": "string"},
+        "use_safe_template": {"type": "boolean"}
+      }
+    },
+    "CommandEvent": {
+      "type": "object",
+      "required": ["channel", "command", "arguments", "status"],
+      "properties": {
+        "channel": {"enum": ["ui", "feishu_mock", "feishu"]},
+        "command": {"type": "string"},
+        "arguments": {"type": "object"},
+        "status": {"enum": ["received", "approved", "rejected", "failed"]},
+        "response": {"type": "string"}
+      }
+    }
+  }
+}

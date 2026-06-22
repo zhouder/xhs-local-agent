@@ -1,0 +1,7 @@
+publish:
+  # Selectors are intentionally centralized and must be verified against the current UI.
+  title: 'input[placeholder*="标题"]'
+  body: '[contenteditable="true"]'
+  file_input: 'input[type="file"]'
+  topic_input: 'input[placeholder*="话题"]'
+  submit_button: 'button:has-text("发布")'

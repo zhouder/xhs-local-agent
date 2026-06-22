@@ -1,0 +1,9 @@
+{% extends "base.html" %}{% block title %}草稿 {{ note.id }}{% endblock %}
+{% block content %}<div class="row between"><div><h1>草稿 #{{ note.id }}</h1><span class="status">{{ note.status }}</span></div><a href="/notes">返回列表</a></div>
+<section><form method="post" action="/notes/{{ note.id }}/edit" class="stack"><label>标题<input name="title" maxlength="100" value="{{ note.title }}" required></label><label>正文<textarea name="body" rows="13" required>{{ note.body }}</textarea></label><label>话题（逗号分隔）<input name="hashtags" value="{{ hashtags }}"></label><label>封面提示词<textarea name="cover_prompt" rows="3">{{ note.cover_prompt }}</textarea></label><label>本地素材绝对路径<input name="media_path" value="{{ media_paths[0] if media_paths else '' }}" placeholder="D:\media\cover.png"></label><button>保存修改</button></form></section>
+<section><h2>审核与执行</h2><p class="warning">发布前复核：标题、正文、话题、封面提示词和素材路径均显示在上方。第一阶段只支持 dry-run 填表，绝不点击发布。</p><div class="actions">
+{% if note.status in ['draft','rejected'] %}<form method="post" action="/notes/{{ note.id }}/submit"><button class="primary">提交审核</button></form>{% endif %}
+{% if note.status == 'pending_review' %}<form method="post" action="/notes/{{ note.id }}/approve"><input type="hidden" name="confirm" value="APPROVE"><button class="primary">批准发布</button></form><form method="post" action="/notes/{{ note.id }}/reject"><input name="reason" placeholder="拒绝原因"><button class="danger">拒绝</button></form>{% endif %}
+{% if note.status not in ['publishing','published'] %}<form method="post" action="/notes/{{ note.id }}/regenerate"><button>重新生成</button></form>{% endif %}
+{% if note.status == 'approved' %}<form method="post" action="/notes/{{ note.id }}/dry-run"><button class="primary">Playwright dry-run 填表</button></form>{% endif %}
+<button disabled title="第一阶段禁用">真实发布（禁用）</button></div></section>{% endblock %}

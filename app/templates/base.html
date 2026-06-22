@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}XHS Local Agent{% endblock %}</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 16 16%22><rect width=%2216%22 height=%2216%22 rx=%223%22 fill=%22%233157a4%22/></svg>">
+  <link rel="stylesheet" href="{{ url_for('static', path='/style.css') }}">
+</head>
+<body>
+  <header><strong>XHS Local Agent</strong><span class="badge">本地 MVP · Dry-run</span></header>
+  <nav>
+    <a href="/">Dashboard</a><a href="/notes">草稿</a><a href="/records/comments">评论</a>
+    <a href="/records/messages">私信</a><a href="/records/interactions">互动</a>
+    <a href="/audit">审计日志</a><a href="/records/errors">浏览器错误</a><a href="/settings">设置</a>
+  </nav>
+  <main>{% if message %}<p class="notice">{{ message }}</p>{% endif %}{% block content %}{% endblock %}</main>
+</body>
+</html>

@@ -1,0 +1,15 @@
+.env
+.env.bak
+.venv/
+__pycache__/
+.pytest_cache/
+.playwright-cli/
+*.py[cod]
+data/*.db
+data/
+*.db
+*.sqlite
+data/screenshots/*
+!data/screenshots/.gitkeep
+screenshots/
+logs/
