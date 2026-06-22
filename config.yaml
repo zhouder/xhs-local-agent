@@ -52,6 +52,7 @@ ai:
       api_key_env: "ANTHROPIC_API_KEY"
       example_models: ["claude-opus", "claude-sonnet", "claude-haiku"]
       supports_json_mode: false
+      auth_scheme: "auto"
     gemini:
       display_name: "Google Gemini"
       provider_type: "gemini"
@@ -133,11 +134,13 @@ ai:
       api_key_env: ""
       example_models: ["local-model"]
     openmodel:
-      display_name: "OpenModel / 第三方聚合平台"
-      provider_type: "chat_completions"
+      display_name: "OpenModel"
+      provider_type: "anthropic_messages"
       default_base_url: "https://api.openmodel.ai"
       api_key_env: "OPENMODEL_API_KEY"
-      example_models: ["自由填写模型 ID"]
+      example_models: ["deepseek-v4-flash"]
+      supports_json_mode: false
+      auth_scheme: "auto"
 
 publish:
   require_review: true

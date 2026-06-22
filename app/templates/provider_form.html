@@ -19,11 +19,12 @@
 </div></section>
 
 <section class="connection-card"><h2>测试连接</h2><p class="muted">测试时会先自动保存当前配置，再使用默认模型发送短 JSON 请求。</p>
-  <div class="request-preview"><h3>当前请求预览</h3><dl><div><dt>API 格式</dt><dd id="preview-format">-</dd></div><div><dt>默认模型</dt><dd id="preview-model">-</dd></div><div><dt>将请求的 URL</dt><dd id="preview-url">-</dd></div><div><dt>API Key</dt><dd id="preview-key">{{ provider.key_status if provider else '未配置' }}</dd></div></dl></div>
+  <div class="request-preview"><h3>当前请求预览</h3><dl><div><dt>API 格式</dt><dd id="preview-format">-</dd></div><div><dt>默认模型</dt><dd id="preview-model">-</dd></div><div><dt>实际将请求的 URL</dt><dd id="preview-url">{{ provider.request_url if provider else '-' }}</dd></div><div><dt>认证方式</dt><dd id="preview-auth">{% if provider and provider.provider_type == 'anthropic_messages' %}{% if provider.auth_scheme == 'auto' %}自动（实际 {{ 'Bearer Token' if provider.resolved_auth_scheme == 'bearer' else 'x-api-key' }}）{% elif provider.auth_scheme == 'bearer' %}Bearer Token{% elif provider.auth_scheme == 'x_api_key' %}x-api-key{% else %}两者都发送{% endif %}{% else %}-{% endif %}</dd></div><div><dt>API Key</dt><dd id="preview-key">{{ provider.key_status if provider else '未配置' }}</dd></div></dl></div>
 </section>
 
 <details class="advanced-settings"><summary>高级设置</summary><div class="stack advanced-content">
   <div class="row wrap"><label class="check"><input type="checkbox" name="supports_json_mode" value="true" {% if data.supports_json_mode|default(true) %}checked{% endif %}>JSON mode</label><label class="check"><input type="checkbox" name="supports_streaming" value="true" {% if data.supports_streaming|default(false) %}checked{% endif %}>Streaming</label><label class="check"><input type="checkbox" name="supports_vision" value="true" {% if data.supports_vision|default(false) %}checked{% endif %}>Vision</label><label class="check"><input type="checkbox" name="supports_tools" value="true" {% if data.supports_tools|default(false) %}checked{% endif %}>Tools</label></div>
+  <label>认证方式<select name="auth_scheme" id="auth-scheme"><option value="auto" {% if data.auth_scheme|default('auto') == 'auto' %}selected{% endif %}>自动</option><option value="bearer" {% if data.auth_scheme|default('auto') == 'bearer' %}selected{% endif %}>Bearer Token</option><option value="x_api_key" {% if data.auth_scheme|default('auto') == 'x_api_key' %}selected{% endif %}>x-api-key</option><option value="both" {% if data.auth_scheme|default('auto') == 'both' %}selected{% endif %}>两者都发送</option></select><span class="field-help">仅 Anthropic Messages 使用；自动模式对 Anthropic 官方使用 x-api-key，对中转站使用 Bearer Token。</span></label>
   <div class="grid-form"><label>请求超时（秒）<input type="number" name="timeout_seconds" value="{{ data.timeout_seconds|default(60) }}" min="1" max="300"></label><label>最大输出 Tokens<input type="number" name="max_output_tokens" value="{{ data.max_output_tokens|default('', true) }}" min="1"></label><label>默认温度<input name="temperature_default" value="{{ data.temperature_default|default('0.6') }}"></label></div>
   <label>Extra Headers JSON<textarea name="extra_headers_json" rows="3">{{ data.extra_headers_json|default('{}') }}</textarea></label>
   <label>Extra Body JSON<textarea name="extra_body_json" rows="3">{{ data.extra_body_json|default('{}') }}</textarea></label>
@@ -53,6 +54,7 @@ if (presetSelect) presetSelect.addEventListener('change', () => {
   document.getElementById('display-name').value = item.display_name || '';
   document.getElementById('base-url').value = item.default_base_url || '';
   document.getElementById('provider-type').value = item.provider_type || 'chat_completions';
+  document.getElementById('auth-scheme').value = item.auth_scheme || 'auto';
   modelsText.value = (item.example_models || []).join('\n');
   refreshModels((item.example_models || [])[0] || '');
   updatePreview();
@@ -75,10 +77,16 @@ function updatePreview() {
   document.getElementById('preview-format').textContent = label;
   document.getElementById('preview-model').textContent = defaultModel.value || '-';
   document.getElementById('preview-url').textContent = endpoint(document.getElementById('base-url').value, type) || '-';
+  const scheme = document.getElementById('auth-scheme').value;
+  const host = (() => { try { return new URL(document.getElementById('base-url').value).hostname.toLowerCase(); } catch (_) { return ''; } })();
+  const resolved = host === 'anthropic.com' || host.endsWith('.anthropic.com') ? 'x-api-key' : 'Bearer Token';
+  const labels = {auto: `自动（实际 ${resolved}）`, bearer: 'Bearer Token', x_api_key: 'x-api-key', both: '两者都发送'};
+  document.getElementById('preview-auth').textContent = type === 'anthropic_messages' ? labels[scheme] : '由 API 格式决定';
   const help = document.getElementById('api-format-help'); if (help) help.textContent = descriptions[type] || '';
 }
 document.getElementById('base-url').addEventListener('input', updatePreview);
 document.getElementById('provider-type').addEventListener('change', updatePreview);
+document.getElementById('auth-scheme').addEventListener('change', updatePreview);
 defaultModel.addEventListener('change', updatePreview);
 updatePreview();
 </script>{% endblock %}

@@ -86,11 +86,13 @@ python -m uvicorn app.main:app --host 127.0.0.1 --port 8765
 
 Base URL 填写平台 API 根地址即可，例如 `https://api.deepseek.com` 或 `https://api.example.com/v1`。系统会根据格式追加正确路径；如果已经包含 `/chat/completions`、`/v1/messages` 或 `/responses`，不会重复追加。
 
+OpenModel 使用 Anthropic Messages 时，选择 OpenModel preset，保持 Base URL 为 `https://api.openmodel.ai`、API 格式为 Anthropic Messages、认证方式为“自动”，模型填写 `deepseek-v4-flash`。自动认证对 Anthropic 官方域名发送 `x-api-key`，对 OpenModel 等中转站发送 `Authorization: Bearer`；也可在高级设置中明确选择 Bearer Token、x-api-key 或两者都发送。
+
 旧版 Mock、Ollama、Gemini、Custom HTTP 等 Profile 不会被删除，在列表中标记为“旧版 / 高级 Provider”，但不会出现在普通 API 格式下拉框。
 
 每个供应商的多个模型保存在 `provider_models` 表，`ai_providers.default_model_id` 指向默认模型。旧版 `model_id` 会在启动时幂等迁移为模型列表，不破坏现有 Provider。生成草稿和连接测试默认使用选中的默认模型。
 
-“高级设置”默认折叠，包含 JSON mode、Streaming、Vision、Tools、超时、最大输出 Tokens、温度和扩展 JSON。普通用户无需修改。认证头和 API Key 不允许放入高级 JSON；真实 Key 仅保存在本机 `.env`，写入前备份 `.env.bak`，页面、SQLite 和审计日志均不显示明文。已配置的 Key 输入框显示 `******** 已配置，留空则不修改`，这只是状态提示，不是 Key 回显。
+“高级设置”默认折叠，包含认证方式、JSON mode、Streaming、Vision、Tools、超时、最大输出 Tokens、温度和扩展 JSON。普通用户无需修改。认证头和 API Key 不允许放入高级 JSON；真实 Key 仅保存在本机 `.env`，写入前备份 `.env.bak`，页面、SQLite 和审计日志均不显示明文。已配置的 Key 输入框显示 `******** 已配置，留空则不修改`，这只是状态提示，不是 Key 回显。
 
 编辑页会预览 API 格式、默认模型、最终请求 URL 和 Key 状态。点击“保存并测试连接”时会先保存当前表单，再发送 `请只返回 JSON：{"ok": true}`，完成后继续停留在编辑页。成功显示具体模型；失败显示脱敏后的原因并写入审计：
 

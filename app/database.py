@@ -73,6 +73,7 @@ def _migrate_ai_providers(target_engine=None) -> None:
         "max_output_tokens": "INTEGER",
         "temperature_default": "VARCHAR(20) NOT NULL DEFAULT '0.6'",
         "timeout_seconds": "INTEGER NOT NULL DEFAULT 60",
+        "auth_scheme": "VARCHAR(20) NOT NULL DEFAULT 'auto'",
         "extra_headers_json": "TEXT NOT NULL DEFAULT '{}'",
         "extra_body_json": "TEXT NOT NULL DEFAULT '{}'",
         "notes": "TEXT NOT NULL DEFAULT ''",

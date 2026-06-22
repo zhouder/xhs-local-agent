@@ -46,6 +46,7 @@ class AIProvider(TimestampMixin, Base):
     max_output_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
     temperature_default: Mapped[str] = mapped_column(String(20), default="0.6")
     timeout_seconds: Mapped[int] = mapped_column(Integer, default=60)
+    auth_scheme: Mapped[str] = mapped_column(String(20), default="auto")
     extra_headers_json: Mapped[str] = mapped_column(Text, default="{}")
     extra_body_json: Mapped[str] = mapped_column(Text, default="{}")
     notes: Mapped[str] = mapped_column(Text, default="")

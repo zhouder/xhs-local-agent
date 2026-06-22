@@ -10,7 +10,7 @@ def test_legacy_deepseek_glm_rows_survive_migration(tmp_path):
         connection.execute(text("INSERT INTO ai_providers (name, base_url, model, api_key_env, created_at, updated_at) VALUES ('deepseek','https://api.deepseek.com','deepseek-chat','DEEPSEEK_API_KEY',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP), ('glm','https://open.bigmodel.cn/api/paas/v4','glm-4','GLM_API_KEY',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)"))
     _migrate_ai_providers(engine)
     columns = {column["name"] for column in inspect(engine).get_columns("ai_providers")}
-    assert {"display_name", "provider_type", "model_id", "is_default", "extra_headers_json"} <= columns
+    assert {"display_name", "provider_type", "model_id", "is_default", "extra_headers_json", "auth_scheme"} <= columns
     with engine.connect() as connection:
         rows = connection.execute(text("SELECT name, model_id, api_key_env FROM ai_providers ORDER BY id")).all()
     assert rows == [("deepseek", "deepseek-chat", "DEEPSEEK_API_KEY"), ("glm", "glm-4", "GLM_API_KEY")]

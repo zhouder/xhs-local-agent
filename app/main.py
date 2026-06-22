@@ -14,6 +14,7 @@ from sqlalchemy import desc, select
 from sqlalchemy.orm import Session
 
 from app.ai.factory import create_provider_from_profile
+from app.ai.anthropic import resolve_auth_scheme
 from app.ai.endpoints import build_endpoint_url, normalize_ui_api_format
 from app.ai.errors import friendly_connection_error
 from app.ai.openai_compatible import AIProviderError
@@ -274,6 +275,7 @@ def _provider_view_for_form(registry: ProviderRegistry, row):
     view["legacy_format"] = normalized is None
     view["key_status"] = "不需要" if not provider_requires_api_key(row.provider_type, row.base_url) else ("已配置" if row.api_key_configured_status else "未配置")
     view["request_url"] = build_endpoint_url(row.base_url, normalized or row.provider_type)
+    view["resolved_auth_scheme"] = resolve_auth_scheme(row.auth_scheme, row.base_url) if normalized == "anthropic_messages" else row.auth_scheme
     return view
 
 
@@ -281,7 +283,7 @@ def _provider_input(
     display_name: str, provider_type: str, base_url: str, models_text: str, default_model_id: str, api_key_env: str,
     supports_json_mode: bool, supports_streaming: bool, supports_vision: bool, supports_tools: bool,
     extra_headers_json: str, extra_body_json: str, notes: str, timeout_seconds,
-    max_output_tokens: str, temperature_default: str,
+    max_output_tokens: str, temperature_default: str, auth_scheme: str,
 ) -> ProviderInput:
     if not provider_type:
         raise ValueError("请选择 API 格式")
@@ -306,6 +308,7 @@ def _provider_input(
         notes=notes, timeout_seconds=parsed_timeout,
         max_output_tokens=int(max_output_tokens) if max_output_tokens.strip() else None,
         temperature_default=str(parsed_temperature),
+        auth_scheme=auth_scheme,
     )
 
 
@@ -337,13 +340,14 @@ def add_provider(
     supports_streaming: bool = Form(False), supports_vision: bool = Form(False), supports_tools: bool = Form(False),
     extra_headers_json: str = Form("{}"), extra_body_json: str = Form("{}"), notes: str = Form(""),
     timeout_seconds: str = Form("60"), max_output_tokens: str = Form(""), temperature_default: str = Form("0.6"),
+    auth_scheme: str = Form("auto"),
     db: Session = Depends(get_db),
 ):
-    safe_form = {"display_name": display_name, "provider_type": provider_type, "base_url": base_url, "models_text": models_text, "default_model_id": default_model_id, "supports_json_mode": supports_json_mode, "supports_streaming": supports_streaming, "supports_vision": supports_vision, "supports_tools": supports_tools, "extra_headers_json": extra_headers_json, "extra_body_json": extra_body_json, "notes": notes, "timeout_seconds": timeout_seconds, "max_output_tokens": max_output_tokens, "temperature_default": temperature_default}
+    safe_form = {"display_name": display_name, "provider_type": provider_type, "base_url": base_url, "models_text": models_text, "default_model_id": default_model_id, "supports_json_mode": supports_json_mode, "supports_streaming": supports_streaming, "supports_vision": supports_vision, "supports_tools": supports_tools, "extra_headers_json": extra_headers_json, "extra_body_json": extra_body_json, "notes": notes, "timeout_seconds": timeout_seconds, "max_output_tokens": max_output_tokens, "temperature_default": temperature_default, "auth_scheme": auth_scheme}
     try:
         registry = ProviderRegistry(db, settings)
         api_key_env = generate_api_key_env(display_name)
-        data = _provider_input(display_name, provider_type, base_url, models_text, default_model_id, api_key_env, supports_json_mode, supports_streaming, supports_vision, supports_tools, extra_headers_json, extra_body_json, notes, timeout_seconds, max_output_tokens, temperature_default)
+        data = _provider_input(display_name, provider_type, base_url, models_text, default_model_id, api_key_env, supports_json_mode, supports_streaming, supports_vision, supports_tools, extra_headers_json, extra_body_json, notes, timeout_seconds, max_output_tokens, temperature_default, auth_scheme)
         registry.validate_input(data)
         if provider_requires_api_key(provider_type, base_url) and not api_key and not os.getenv(api_key_env):
             raise ValueError("该 API 格式需要填写 API Key")
@@ -373,16 +377,17 @@ def edit_provider(
     supports_streaming: bool = Form(False), supports_vision: bool = Form(False), supports_tools: bool = Form(False),
     extra_headers_json: str = Form("{}"), extra_body_json: str = Form("{}"), notes: str = Form(""),
     timeout_seconds: str = Form("60"), max_output_tokens: str = Form(""), temperature_default: str = Form("0.6"),
+    auth_scheme: str = Form("auto"),
     db: Session = Depends(get_db),
 ):
     registry = ProviderRegistry(db, settings)
     existing = registry.get(provider_id)
     if not existing:
         return settings_redirect(error="Provider 不存在")
-    safe_form = {"display_name": display_name, "provider_type": provider_type, "base_url": base_url, "models_text": models_text, "default_model_id": default_model_id, "supports_json_mode": supports_json_mode, "supports_streaming": supports_streaming, "supports_vision": supports_vision, "supports_tools": supports_tools, "extra_headers_json": extra_headers_json, "extra_body_json": extra_body_json, "notes": notes, "timeout_seconds": timeout_seconds, "max_output_tokens": max_output_tokens, "temperature_default": temperature_default}
+    safe_form = {"display_name": display_name, "provider_type": provider_type, "base_url": base_url, "models_text": models_text, "default_model_id": default_model_id, "supports_json_mode": supports_json_mode, "supports_streaming": supports_streaming, "supports_vision": supports_vision, "supports_tools": supports_tools, "extra_headers_json": extra_headers_json, "extra_body_json": extra_body_json, "notes": notes, "timeout_seconds": timeout_seconds, "max_output_tokens": max_output_tokens, "temperature_default": temperature_default, "auth_scheme": auth_scheme}
     try:
         api_key_env = existing.api_key_env or generate_api_key_env(display_name)
-        data = _provider_input(display_name, provider_type, base_url, models_text, default_model_id, api_key_env, supports_json_mode, supports_streaming, supports_vision, supports_tools, extra_headers_json, extra_body_json, notes, timeout_seconds, max_output_tokens, temperature_default)
+        data = _provider_input(display_name, provider_type, base_url, models_text, default_model_id, api_key_env, supports_json_mode, supports_streaming, supports_vision, supports_tools, extra_headers_json, extra_body_json, notes, timeout_seconds, max_output_tokens, temperature_default, auth_scheme)
         registry.validate_input(data)
         if provider_requires_api_key(provider_type, base_url) and not api_key and not os.getenv(api_key_env):
             raise ValueError("该 API 格式需要 API Key；请输入 Key，或确认本地 .env 已配置")

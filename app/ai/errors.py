@@ -6,6 +6,8 @@ from app.security import redact_secrets
 def friendly_connection_error(error: Exception) -> str:
     text = str(redact_secrets(str(error)))
     folded = text.casefold()
+    if "请求 url：" in folded and "content-type：" in folded:
+        return text[:1000]
     if "http 401" in folded or "unauthorized" in folded:
         return "401 Unauthorized，请检查 API Key。"
     if "http 403" in folded or "forbidden" in folded:

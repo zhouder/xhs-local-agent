@@ -17,6 +17,7 @@ SUPPORTED_PROVIDER_TYPES = {
     "mock", "openai_compatible", "anthropic_messages", "gemini",
     "ollama", "lm_studio", "custom_http", "chat_completions", "responses", "openai_responses",
 }
+SUPPORTED_AUTH_SCHEMES = {"auto", "bearer", "x_api_key", "both"}
 
 
 @dataclass(frozen=True)
@@ -38,6 +39,7 @@ class ProviderInput:
     timeout_seconds: int = 60
     max_output_tokens: int | None = None
     temperature_default: str = "0.6"
+    auth_scheme: str = "auto"
 
 
 class ProviderRegistry:
@@ -102,6 +104,7 @@ class ProviderRegistry:
             timeout_seconds=max(1, min(data.timeout_seconds, 300)),
             max_output_tokens=data.max_output_tokens,
             temperature_default=data.temperature_default,
+            auth_scheme=data.auth_scheme,
             api_key_configured_status=self._key_configured(data.provider_type, data.api_key_env),
         )
         self.db.add(row)
@@ -125,6 +128,7 @@ class ProviderRegistry:
         row.extra_headers_json, row.extra_body_json = self._validated_json(data.extra_headers_json, headers=True), self._validated_json(data.extra_body_json)
         row.notes, row.timeout_seconds = data.notes, max(1, min(data.timeout_seconds, 300))
         row.max_output_tokens, row.temperature_default = data.max_output_tokens, data.temperature_default
+        row.auth_scheme = data.auth_scheme
         row.api_key_configured_status = self._key_configured(row.provider_type, row.api_key_env)
         self._replace_models(row.id, models, default_model)
         self.db.commit()
@@ -172,6 +176,7 @@ class ProviderRegistry:
             models_text="\n".join(examples),
             api_key_env=api_key_env or preset.get("api_key_env", ""),
             supports_json_mode=bool(preset.get("supports_json_mode", True)),
+            auth_scheme=preset.get("auth_scheme", "auto"),
             notes=f"Created from preset: {preset_name}",
         ))
 
@@ -197,6 +202,8 @@ class ProviderRegistry:
                 raise ValueError("请至少填写一个模型 ID")
         if data.api_key_env and not re.fullmatch(r"[A-Z][A-Z0-9_]*", data.api_key_env):
             raise ValueError("api_key_env must be an uppercase environment variable name")
+        if data.auth_scheme not in SUPPORTED_AUTH_SCHEMES:
+            raise ValueError("不支持的认证方式")
         self._validated_json(data.extra_headers_json, headers=True)
         self._validated_json(data.extra_body_json)
 
@@ -293,6 +300,7 @@ def provider_view(row: AIProvider, models: list[ProviderModel] | None = None) ->
         "extra_headers_json": row.extra_headers_json, "extra_body_json": row.extra_body_json,
         "notes": row.notes, "timeout_seconds": row.timeout_seconds,
         "max_output_tokens": row.max_output_tokens, "temperature_default": row.temperature_default,
+        "auth_scheme": row.auth_scheme,
     }
     if models is not None:
         result["models"] = [model.model_id for model in models]

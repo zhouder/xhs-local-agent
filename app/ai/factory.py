@@ -61,6 +61,8 @@ def create_provider_from_profile(profile: AIProvider, settings: Settings) -> AIP
         "extra_headers": json.loads(profile.extra_headers_json or "{}"),
         "extra_body": json.loads(profile.extra_body_json or "{}"),
     }
+    if provider_type == "anthropic_messages":
+        kwargs["auth_scheme"] = profile.auth_scheme
     if provider_type in {"lm_studio", "custom_http"}:
         kwargs["requires_api_key"] = False
     return adapter(profile.base_url, api_key, profile.model_id, **kwargs)
