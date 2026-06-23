@@ -1,6 +1,7 @@
 {% extends "base.html" %}{% block title %}草稿{% endblock %}
 {% block content %}
 <h1>内容草稿</h1>
+{% if error %}<p class="form-error">{{ error }}</p>{% endif %}
 <section><h2>生成新草稿</h2>
 <form method="post" action="/notes/generate" class="stack">
   <div class="grid-form">

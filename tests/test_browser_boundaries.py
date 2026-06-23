@@ -16,6 +16,13 @@ from app.services.review import ReviewService
 
 
 class FakeLocator:
+    def __init__(self, page=None):
+        self.page = page
+
+    def wait_for(self, state="visible", timeout=0):
+        if self.page and self.page.fail:
+            raise RuntimeError("selector changed")
+
     def fill(self, value):
         return None
 
@@ -35,7 +42,7 @@ class FakePage:
             raise RuntimeError("selector changed")
 
     def locator(self, selector):
-        return FakeLocator()
+        return FakeLocator(self)
 
     def wait_for_timeout(self, milliseconds):
         return None
@@ -99,22 +106,22 @@ def approved_note(db):
     return note
 
 
-def test_dry_run_fills_without_any_click(db, settings, tmp_path, monkeypatch):
+def test_dry_run_creates_local_preview_without_browser(db, settings, tmp_path, monkeypatch):
     note = approved_note(db)
     settings.browser["screenshots_dir"] = str(tmp_path)
-    monkeypatch.setattr(xhs_module, "sync_playwright", lambda: FakePlaywright(FakePage()))
+    monkeypatch.setattr(xhs_module, "sync_playwright", lambda: (_ for _ in ()).throw(AssertionError("dry_run should not open browser")))
     XHSBrowser(db, settings, NullNotifier()).fill_approved_note(note.id, dry_run=True)
-    row = db.scalar(select(AuditLog).where(AuditLog.action_type == "browser.fill_publish", AuditLog.status == "success"))
+    row = db.scalar(select(AuditLog).where(AuditLog.action_type == "browser.dry_run_preview", AuditLog.status == "success"))
     assert row is not None
     assert Path(row.screenshot_path).exists()
 
 
-def test_browser_failure_saves_screenshot_error_and_audit(db, settings, tmp_path, monkeypatch):
+def test_fill_only_browser_failure_saves_screenshot_error_and_audit(db, settings, tmp_path, monkeypatch):
     note = approved_note(db)
     settings.browser["screenshots_dir"] = str(tmp_path)
     monkeypatch.setattr(xhs_module, "sync_playwright", lambda: FakePlaywright(FakePage(fail=True)))
-    with pytest.raises(RuntimeError, match="selector changed"):
-        XHSBrowser(db, settings, NullNotifier()).fill_approved_note(note.id, dry_run=True)
+    with pytest.raises(RuntimeError, match="没有找到|等待发布页"):
+        XHSBrowser(db, settings, NullNotifier()).fill_approved_note(note.id, dry_run=False, mode="fill_only")
     error = db.scalar(select(BrowserError))
     audit = db.scalar(select(AuditLog).where(AuditLog.action_type == "browser.fill_publish", AuditLog.status == "failed"))
     assert error and audit
@@ -135,7 +142,7 @@ def test_launch_failure_still_writes_failure_artifact(db, settings, tmp_path, mo
     settings.browser["screenshots_dir"] = str(tmp_path)
     monkeypatch.setattr(xhs_module, "sync_playwright", lambda: FailingPlaywright())
     with pytest.raises(RuntimeError, match="browser unavailable"):
-        XHSBrowser(db, settings, NullNotifier()).fill_approved_note(note.id, dry_run=True)
+        XHSBrowser(db, settings, NullNotifier()).fill_approved_note(note.id, dry_run=False, mode="fill_only")
     error = db.scalar(select(BrowserError))
     assert error.screenshot_path.endswith("page-unavailable.png")
     assert Path(error.screenshot_path).read_bytes().startswith(b"\x89PNG")

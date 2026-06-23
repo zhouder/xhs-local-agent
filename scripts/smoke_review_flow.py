@@ -29,7 +29,7 @@ def main() -> int:
         assert note.status == NoteStatus.PENDING_REVIEW
         review.approve(note.id)
         assert note.status == NoteStatus.APPROVED
-        print(f"Created and approved note_id={note.id}. Browser dry_run requires manual page login; skipping real browser launch.")
+        print(f"Created and approved note_id={note.id}. dry_run is local simulation; skipping real browser launch.")
         print(f"Default publish mode={settings.browser.get('dry_run', True)}; final confirm remains required.")
     return 0
 

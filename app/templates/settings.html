@@ -1,25 +1,49 @@
-{% extends "base.html" %}{% block title %}AI 设置{% endblock %}
+{% extends "base.html" %}{% block title %}设置{% endblock %}
 {% block content %}
-<div class="row between"><div><h1>AI 供应商</h1><p class="muted">选择你用来生成内容的模型服务。</p></div><a class="button-link primary-link" href="/providers/new">新增供应商</a></div>
+<div class="row between">
+  <div><h1>设置</h1><p class="muted">配置 AI Provider 和浏览器。API Key 不会在页面明文展示。</p></div>
+  <a class="button-link primary-link" href="/providers/new">新增 Provider</a>
+</div>
 {% if error %}<p class="form-error">{{ error }}</p>{% endif %}
 
-<section class="simple-section"><div class="row between"><div><h2>默认供应商</h2><p class="muted">当前默认：<strong>{{ current_provider.display_name if current_provider else '未设置' }}</strong></p></div>
-{% if providers %}<form method="post" action="/settings/ai-provider" class="row"><select name="provider" aria-label="默认 AI Provider">{% for item in providers %}{% if item.enabled %}<option value="{{ item.name }}" {% if item.is_default %}selected{% endif %}>{{ item.display_name }}</option>{% endif %}{% endfor %}</select><button>保存</button></form>{% endif %}</div></section>
+<section class="simple-section">
+  <h2>默认 AI Provider</h2>
+  <p class="muted">当前默认：<strong>{{ current_provider.display_name if current_provider else '未设置' }}</strong></p>
+  {% if providers %}
+  <form method="post" action="/settings/ai-provider" class="row">
+    <select name="provider" aria-label="默认 AI Provider">
+      {% for item in providers %}{% if item.enabled %}<option value="{{ item.name }}" {% if item.is_default %}selected{% endif %}>{{ item.display_name }}</option>{% endif %}{% endfor %}
+    </select>
+    <button>保存</button>
+  </form>
+  {% endif %}
+</section>
 
-<section class="simple-section"><h2>已添加的供应商</h2>
+<section class="simple-section">
+  <h2>浏览器选择</h2>
+  <p class="muted">dry_run 是本地模拟，不打开浏览器。fill_only 和最终确认发布才会启动浏览器。默认 Chrome。</p>
+  <form method="post" action="/settings/browser" class="row">
+    <select name="browser_channel">
+      <option value="chrome" {% if browser_channel == 'chrome' %}selected{% endif %}>Chrome</option>
+      <option value="msedge" {% if browser_channel == 'msedge' %}selected{% endif %}>Edge</option>
+      <option value="chromium" {% if browser_channel == 'chromium' %}selected{% endif %}>Chromium</option>
+    </select>
+    <button>保存浏览器选择</button>
+  </form>
+</section>
+
+<section class="simple-section"><h2>已添加 Provider</h2>
 {% if providers %}<div class="provider-cards">{% for item in providers %}<article class="provider-card">
-  <div class="row between"><div><h3>{{ item.display_name }}</h3><span class="format-label">{{ item.api_format_label }}</span>{% if item.legacy_format %}<p class="legacy-note">此为旧版/高级 Provider，普通配置页仅支持三种主流 API 格式。</p>{% endif %}</div><div>{% if item.is_default %}<span class="status">默认</span>{% endif %} <span class="status {{ 'status-off' if not item.enabled }}">{{ '已启用' if item.enabled else '已禁用' }}</span></div></div>
+  <div class="row between"><div><h3>{{ item.display_name }}</h3><span class="format-label">{{ item.api_format_label }}</span></div><div>{% if item.is_default %}<span class="status">默认</span>{% endif %} <span class="status {{ 'status-off' if not item.enabled }}">{{ '已启用' if item.enabled else '已禁用' }}</span></div></div>
   <dl class="provider-summary"><div><dt>请求地址</dt><dd>{{ item.base_url or '本地 Mock' }}</dd></div><div><dt>默认模型</dt><dd><code>{{ item.default_model_id or '-' }}</code></dd></div><div><dt>API Key</dt><dd>{{ item.key_status }}</dd></div></dl>
   <div class="actions compact">
     <form method="post" action="/providers/{{ item.id }}/test"><input type="hidden" name="model_id" value="{{ item.default_model_id }}"><button>测试连接</button></form>
     {% if not item.is_default %}<form method="post" action="/providers/{{ item.id }}/set-default"><button>设为默认</button></form>{% endif %}
     <a class="button-link" href="/providers/{{ item.id }}/edit">编辑</a>
     <form method="post" action="/providers/{{ item.id }}/toggle"><button>{{ '禁用' if item.enabled else '启用' }}</button></form>
-    {% if item.name != 'mock' and not item.is_default %}<form method="post" action="/providers/{{ item.id }}/delete" onsubmit="return confirm('确定删除这个供应商？')"><button class="danger-link">删除</button></form>{% endif %}
   </div>
-</article>{% endfor %}</div>
-{% else %}<div class="empty-state"><p>还没有供应商。</p><a class="button-link primary-link" href="/providers/new">新增供应商</a></div>{% endif %}
+</article>{% endfor %}</div>{% else %}<p>暂无 Provider。</p>{% endif %}
 </section>
 
-<section class="simple-section"><h2>运行状态</h2><p>Agent：<strong>{{ '已暂停' if paused else '运行中' }}</strong>　浏览器：<strong>Dry-run</strong></p></section>
+<section class="simple-section"><h2>运行状态</h2><p>Agent：<strong>{{ '已暂停' if paused else '运行中' }}</strong>。当前浏览器：<strong>{{ browser_channel }}</strong></p></section>
 {% endblock %}

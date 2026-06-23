@@ -104,6 +104,9 @@ def _migrate_media_assets(target_engine=None) -> None:
         "upload_order": "INTEGER NOT NULL DEFAULT 1",
         "status": "VARCHAR(30) NOT NULL DEFAULT 'ready'",
         "error_message": "TEXT NOT NULL DEFAULT ''",
+        "source_type": "VARCHAR(40) NOT NULL DEFAULT 'upload'",
+        "source_url": "VARCHAR(1000) NOT NULL DEFAULT ''",
+        "license_note": "TEXT NOT NULL DEFAULT ''",
     }
     with target_engine.begin() as connection:
         for name, definition in additions.items():

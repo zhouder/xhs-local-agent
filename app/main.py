@@ -6,7 +6,7 @@ import os
 from contextlib import asynccontextmanager
 from urllib.parse import urlencode, urlsplit
 
-from fastapi import Depends, FastAPI, Form, HTTPException, Request
+from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -21,7 +21,7 @@ from app.ai.openai_compatible import AIProviderError
 from app.browser.xhs import XHSBrowser
 from app.config import ROOT, get_settings
 from app.database import SessionLocal, get_db, init_db
-from app.models import AuditLog, BrowserError, CommandEvent, Comment, ContentPlan, ContentPlanTopic, Interaction, Message, Note, NoteStatus
+from app.models import AuditLog, BrowserError, CommandEvent, Comment, ContentPlan, ContentPlanTopic, Interaction, Message, Note, NoteStatus, Setting
 from app.repositories import AuditRepository, NoteRepository
 from app.schemas import GenerateNoteRequest, NoteUpdate
 from app.services.notes import NoteService
@@ -29,6 +29,7 @@ from app.services.notifications import create_notifier
 from app.services.policy import PolicyEngine
 from app.services.commands import CommandExecutor
 from app.services.content_plans import ContentPlanService
+from app.services.hashtags import split_hashtags
 from app.services.materials import MaterialService, parse_asset_paths
 from app.services.publish import PublishService
 from app.services.review import ReviewService
@@ -61,6 +62,15 @@ def screenshot_file(filename: str):
     return FileResponse(path)
 
 
+@app.get("/media/{note_dir}/{filename}")
+def media_file(note_dir: str, filename: str):
+    directory = (ROOT / "data" / "media").resolve()
+    path = (directory / note_dir / filename).resolve()
+    if directory not in path.parents or not path.exists():
+        raise HTTPException(404)
+    return FileResponse(path)
+
+
 @app.middleware("http")
 async def same_origin_posts(request: Request, call_next):
     if request.method in {"POST", "PUT", "PATCH", "DELETE"}:
@@ -75,6 +85,10 @@ async def same_origin_posts(request: Request, call_next):
 def redirect(path: str, message: str = ""):
     suffix = f"?{urlencode({'message': message})}" if message else ""
     return RedirectResponse(path + suffix, status_code=303)
+
+
+def redirect_error(path: str, error: str):
+    return RedirectResponse(path + f"?{urlencode({'error': error})}", status_code=303)
 
 
 def settings_redirect(*, message: str = "", error: str = ""):
@@ -113,11 +127,13 @@ def dashboard(request: Request, db: Session = Depends(get_db)):
     today_published = db.scalar(select(func.count()).select_from(Note).where(Note.status == NoteStatus.PUBLISHED.value, func.date(Note.published_at) == today)) or 0
     today_generated = db.scalar(select(func.count()).select_from(AuditLog).where(AuditLog.action_type == "ai.generate_note", AuditLog.status == "success", func.date(AuditLog.created_at) == today)) or 0
     plan_count = db.scalar(select(func.count()).select_from(ContentPlan)) or 0
+    pending_plan_topics = db.scalar(select(func.count()).select_from(ContentPlanTopic).where(ContentPlanTopic.status == "pending")) or 0
+    generated_plan_topics = db.scalar(select(func.count()).select_from(ContentPlanTopic).where(ContentPlanTopic.status == "generated")) or 0
     recent = list(db.scalars(select(AuditLog).order_by(desc(AuditLog.created_at)).limit(10)))
     return templates.TemplateResponse(request, "dashboard.html", {
         "notes": notes[:5], "counts": counts, "paused": paused, "scheduler_paused": scheduler_paused,
         "audit_logs": recent, "today_published": today_published, "today_generated": today_generated,
-        "plan_count": plan_count,
+        "plan_count": plan_count, "pending_plan_topics": pending_plan_topics, "generated_plan_topics": generated_plan_topics,
     })
 
 
@@ -127,7 +143,7 @@ def notes_page(request: Request, plan_id: int | None = None, db: Session = Depen
     if plan_id:
         notes = [note for note in notes if note.content_plan_id == plan_id]
     plans = list(db.scalars(select(ContentPlan).order_by(desc(ContentPlan.created_at))))
-    return templates.TemplateResponse(request, "notes.html", {"notes": notes, "plans": plans, "selected_plan_id": plan_id, "message": request.query_params.get("message", "")})
+    return templates.TemplateResponse(request, "notes.html", {"notes": notes, "plans": plans, "selected_plan_id": plan_id, "message": request.query_params.get("message", ""), "error": request.query_params.get("error", "")})
 
 
 @app.post("/notes/generate")
@@ -147,11 +163,12 @@ def generate_note(
         note = NoteService(db, ai_provider(db)).generate(request_data)
         return redirect(f"/notes/{note.id}")
     except AIProviderError as exc:
-        raise HTTPException(502, "AI provider call failed; see audit log") from exc
+        return redirect_error("/notes", "AI 生成失败，请检查默认 Provider 和审计日志。")
     except ValueError as exc:
-        raise HTTPException(400, str(exc)) from exc
+        return redirect_error("/notes", str(exc))
     except Exception as exc:
-        raise HTTPException(500, "Draft generation failed; see audit log") from exc
+        AuditRepository(db).record("ai.generate_note", "failed", target_type="note", error_message=str(exc))
+        return redirect_error("/notes", "草稿生成失败，请查看审计日志。")
 
 
 @app.get("/notes/{note_id}", response_class=HTMLResponse)
@@ -160,12 +177,26 @@ def note_page(note_id: int, request: Request, db: Session = Depends(get_db)):
     note = repo.get(note_id)
     if not note:
         raise HTTPException(404, "Note not found")
+    media_assets = repo.media_assets(note_id)
+    media_views = [
+        {
+            "id": asset.id,
+            "order": asset.upload_order,
+            "filename": os.path.basename(asset.file_path or asset.path),
+            "url": f"/media/note-{note_id}/{os.path.basename(asset.file_path or asset.path)}",
+            "source_type": asset.source_type,
+            "license_note": asset.license_note,
+        }
+        for asset in media_assets
+    ]
     return templates.TemplateResponse(request, "note_detail.html", {
         "note": note,
         "hashtags": ", ".join(json.loads(note.hashtags_json)),
         "media_paths": repo.media_paths(note_id),
-        "media_assets": repo.media_assets(note_id),
+        "media_assets": media_assets,
+        "media_views": media_views,
         "message": request.query_params.get("message", ""),
+        "error": request.query_params.get("error", ""),
     })
 
 
@@ -173,14 +204,15 @@ def note_page(note_id: int, request: Request, db: Session = Depends(get_db)):
 def edit_note(note_id: int, title: str = Form(...), body: str = Form(...), hashtags: str = Form(""), cover_prompt: str = Form(""), media_path: str = Form(""), media_paths: str = Form(""), db: Session = Depends(get_db)):
     try:
         paths = parse_asset_paths(media_paths) or ([media_path] if media_path.strip() else [])
-        update = NoteUpdate(title=title, body=body, hashtags=[x.strip().lstrip("#") for x in hashtags.split(",") if x.strip()], cover_prompt=cover_prompt, media_path="")
+        update = NoteUpdate(title=title, body=body, hashtags=split_hashtags(hashtags), cover_prompt=cover_prompt, media_path="")
         NoteService(db, None).update(note_id, update)
-        MaterialService(db).set_note_assets(note_id, paths)
+        if paths:
+            MaterialService(db).set_note_assets(note_id, paths)
         return redirect(f"/notes/{note_id}", "已保存；如原草稿已提交或批准，审核现已失效并重置为 draft")
     except LookupError as exc:
-        raise HTTPException(404, str(exc)) from exc
+        return redirect_error(f"/notes/{note_id}", str(exc))
     except ValueError as exc:
-        raise HTTPException(409, str(exc)) from exc
+        return redirect_error(f"/notes/{note_id}", str(exc))
 
 
 @app.post("/notes/{note_id}/submit")
@@ -189,18 +221,18 @@ def submit_note(note_id: int, db: Session = Depends(get_db)):
         ReviewService(db, notifier()).submit(note_id)
         return redirect(f"/notes/{note_id}", "已提交审核")
     except (LookupError, ValueError) as exc:
-        raise HTTPException(409, str(exc)) from exc
+        return redirect_error(f"/notes/{note_id}", str(exc))
 
 
 @app.post("/notes/{note_id}/approve")
 def approve_note(note_id: int, confirm: str = Form(""), db: Session = Depends(get_db)):
     if confirm != "APPROVE":
-        raise HTTPException(400, "Approval confirmation missing")
+        return redirect_error(f"/notes/{note_id}", "缺少审核确认。")
     try:
         ReviewService(db, notifier()).approve(note_id)
         return redirect(f"/notes/{note_id}", "已批准；仍需单独点击 dry-run，第一阶段不会真实发布")
     except (LookupError, ValueError) as exc:
-        raise HTTPException(409, str(exc)) from exc
+        return redirect_error(f"/notes/{note_id}", str(exc))
 
 
 @app.post("/notes/{note_id}/reject")
@@ -209,7 +241,7 @@ def reject_note(note_id: int, reason: str = Form(""), db: Session = Depends(get_
         ReviewService(db, notifier()).reject(note_id, reason)
         return redirect(f"/notes/{note_id}", "已拒绝")
     except (LookupError, ValueError) as exc:
-        raise HTTPException(409, str(exc)) from exc
+        return redirect_error(f"/notes/{note_id}", str(exc))
 
 
 @app.post("/notes/{note_id}/regenerate")
@@ -218,9 +250,9 @@ def regenerate_note(note_id: int, db: Session = Depends(get_db)):
         NoteService(db, ai_provider(db)).regenerate(note_id)
         return redirect(f"/notes/{note_id}", "已重新生成")
     except (LookupError, ValueError) as exc:
-        raise HTTPException(409, str(exc)) from exc
+        return redirect_error(f"/notes/{note_id}", str(exc))
     except Exception as exc:
-        raise HTTPException(502, "AI regeneration failed; see audit log") from exc
+        return redirect_error(f"/notes/{note_id}", "重新生成失败，请查看审计日志。")
 
 
 @app.post("/notes/{note_id}/dry-run")
@@ -229,7 +261,7 @@ def dry_run(note_id: int, db: Session = Depends(get_db)):
         PublishService(db, settings, notifier()).fill(note_id, mode="dry_run")
         return redirect(f"/notes/{note_id}/final-review", "Dry-run 已结束，未点击发布；请查看截图。")
     except Exception as exc:
-        raise HTTPException(409, str(exc)) from exc
+        return redirect_error(f"/notes/{note_id}", str(exc))
 
 
 @app.post("/notes/{note_id}/fill")
@@ -238,7 +270,7 @@ def fill_note(note_id: int, mode: str = Form("fill_only"), db: Session = Depends
         PublishService(db, settings, notifier()).fill(note_id, mode=mode)
         return redirect(f"/notes/{note_id}/final-review", "发布页已填好，等待最终确认。")
     except Exception as exc:
-        raise HTTPException(409, str(exc)) from exc
+        return redirect_error(f"/notes/{note_id}", str(exc))
 
 
 @app.get("/notes/{note_id}/final-review", response_class=HTMLResponse)
@@ -255,6 +287,7 @@ def final_review_page(note_id: int, request: Request, db: Session = Depends(get_
         "errors": errors,
         "screenshot_filename": os.path.basename(note.publish_screenshot_path) if note.publish_screenshot_path else "",
         "message": request.query_params.get("message", ""),
+        "error": request.query_params.get("error", ""),
     })
 
 
@@ -264,7 +297,7 @@ def final_confirm_note(note_id: int, db: Session = Depends(get_db)):
         PublishService(db, settings, notifier()).final_confirm(note_id)
         return redirect(f"/notes/{note_id}/final-review", "已点击发布按钮；结果标记为 publish_uncertain，请人工核验。")
     except Exception as exc:
-        raise HTTPException(409, str(exc)) from exc
+        return redirect_error(f"/notes/{note_id}/final-review", str(exc))
 
 
 @app.post("/notes/{note_id}/cancel-publish")
@@ -273,7 +306,7 @@ def cancel_publish(note_id: int, db: Session = Depends(get_db)):
         PublishService(db, settings, notifier()).cancel(note_id)
         return redirect(f"/notes/{note_id}", "发布已取消。")
     except Exception as exc:
-        raise HTTPException(409, str(exc)) from exc
+        return redirect_error(f"/notes/{note_id}/final-review", str(exc))
 
 
 @app.post("/notes/{note_id}/return-to-edit")
@@ -282,7 +315,7 @@ def return_to_edit(note_id: int, db: Session = Depends(get_db)):
         PublishService(db, settings, notifier()).return_to_edit(note_id)
         return redirect(f"/notes/{note_id}", "已返回编辑，状态重置为 draft。")
     except Exception as exc:
-        raise HTTPException(409, str(exc)) from exc
+        return redirect_error(f"/notes/{note_id}/final-review", str(exc))
 
 
 @app.post("/notes/{note_id}/retry-fill")
@@ -291,7 +324,44 @@ def retry_fill(note_id: int, mode: str = Form("fill_only"), db: Session = Depend
         PublishService(db, settings, notifier()).retry_fill(note_id, mode=mode)
         return redirect(f"/notes/{note_id}/final-review", "已重新填表，仍等待最终确认。")
     except Exception as exc:
-        raise HTTPException(409, str(exc)) from exc
+        return redirect_error(f"/notes/{note_id}/final-review", str(exc))
+
+
+@app.post("/notes/{note_id}/media/upload")
+def upload_media(note_id: int, files: list[UploadFile] = File(...), db: Session = Depends(get_db)):
+    try:
+        MaterialService(db).upload_files(note_id, files)
+        return redirect(f"/notes/{note_id}", "图片已添加。")
+    except Exception as exc:
+        return redirect_error(f"/notes/{note_id}", str(exc))
+
+
+@app.post("/notes/{note_id}/media/reorder")
+def reorder_media(note_id: int, ordered_ids: str = Form(...), db: Session = Depends(get_db)):
+    try:
+        ids = [int(item) for item in ordered_ids.replace(",", " ").split() if item.strip()]
+        MaterialService(db).reorder(note_id, ids)
+        return redirect(f"/notes/{note_id}", "图片顺序已更新。")
+    except Exception as exc:
+        return redirect_error(f"/notes/{note_id}", str(exc))
+
+
+@app.post("/notes/{note_id}/media/{asset_id}/delete")
+def delete_media(note_id: int, asset_id: int, db: Session = Depends(get_db)):
+    try:
+        MaterialService(db).delete(note_id, asset_id)
+        return redirect(f"/notes/{note_id}", "图片已删除。")
+    except Exception as exc:
+        return redirect_error(f"/notes/{note_id}", str(exc))
+
+
+@app.post("/notes/{note_id}/media/generate-cover")
+def generate_cover(note_id: int, db: Session = Depends(get_db)):
+    try:
+        MaterialService(db).generate_cover(note_id)
+        return redirect(f"/notes/{note_id}", "已生成本地 AI 封面占位图。")
+    except Exception as exc:
+        return redirect_error(f"/notes/{note_id}", str(exc))
 
 
 @app.post("/agent/{action}")
@@ -346,7 +416,7 @@ def records_page(kind: str, request: Request, db: Session = Depends(get_db)):
 def plans_page(request: Request, db: Session = Depends(get_db)):
     plans = list(db.scalars(select(ContentPlan).order_by(desc(ContentPlan.created_at))))
     progress = {plan.id: ContentPlanService(db).progress(plan.id) for plan in plans}
-    return templates.TemplateResponse(request, "plans.html", {"plans": plans, "progress": progress, "message": request.query_params.get("message", "")})
+    return templates.TemplateResponse(request, "plans.html", {"plans": plans, "progress": progress, "message": request.query_params.get("message", ""), "error": request.query_params.get("error", "")})
 
 
 @app.post("/plans")
@@ -359,7 +429,7 @@ def create_plan(
         plan = ContentPlanService(db).create_plan(name=name, audience=audience, style=style, goal=goal, topics_text=topics_text, daily_count=daily_count, publish_times_text=publish_times_text)
         return redirect(f"/plans/{plan.id}", "Content plan created.")
     except ValueError as exc:
-        raise HTTPException(400, str(exc)) from exc
+        return redirect_error("/plans", str(exc))
 
 
 @app.get("/plans/{plan_id}", response_class=HTMLResponse)
@@ -368,16 +438,19 @@ def plan_detail(plan_id: int, request: Request, db: Session = Depends(get_db)):
     if not plan:
         raise HTTPException(404)
     topics = list(db.scalars(select(ContentPlanTopic).where(ContentPlanTopic.plan_id == plan_id).order_by(ContentPlanTopic.id)))
-    return templates.TemplateResponse(request, "plan_detail.html", {"plan": plan, "topics": topics, "progress": ContentPlanService(db).progress(plan_id), "message": request.query_params.get("message", "")})
+    return templates.TemplateResponse(request, "plan_detail.html", {"plan": plan, "topics": topics, "progress": ContentPlanService(db).progress(plan_id), "message": request.query_params.get("message", ""), "error": request.query_params.get("error", "")})
 
 
 @app.post("/plans/{plan_id}/generate")
-def generate_plan_drafts(plan_id: int, db: Session = Depends(get_db)):
+def generate_plan_drafts(plan_id: int, mode: str = Form("pending"), db: Session = Depends(get_db)):
     try:
-        created = ContentPlanService(db, ai_provider(db)).generate_drafts(plan_id)
-        return redirect(f"/plans/{plan_id}", f"Generated {len(created)} draft(s).")
+        statuses = {"failed"} if mode == "failed" else {"pending"}
+        created = ContentPlanService(db, ai_provider(db)).generate_drafts(plan_id, statuses=statuses)
+        failed = db.scalar(select(func.count()).select_from(ContentPlanTopic).where(ContentPlanTopic.plan_id == plan_id, ContentPlanTopic.status == "failed")) or 0
+        total = db.scalar(select(func.count()).select_from(ContentPlanTopic).where(ContentPlanTopic.plan_id == plan_id)) or 0
+        return redirect(f"/plans/{plan_id}", f"批量生成完成：总主题 {total}，成功新增 {len(created)}，失败 {failed}。")
     except Exception as exc:
-        raise HTTPException(409, str(exc)) from exc
+        return redirect_error(f"/plans/{plan_id}", str(exc))
 
 
 @app.post("/commands/mock", response_class=HTMLResponse)
@@ -416,11 +489,28 @@ def settings_page(request: Request, db: Session = Depends(get_db)):
         view["legacy_format"] = normalized is None
         view["key_status"] = "不需要" if not provider_requires_api_key(row.provider_type, row.base_url) else ("已配置" if row.api_key_configured_status else "未配置")
         views.append(view)
+    browser_row = db.scalar(select(Setting).where(Setting.key == "browser_channel"))
+    browser_channel = browser_row.value_json if browser_row else settings.browser.get("channel", "chrome")
     return templates.TemplateResponse(request, "settings.html", {
         "config": settings, "paused": PolicyEngine(db, settings).is_paused(),
         "providers": views, "current_provider": provider_view(current) if current else None,
+        "browser_channel": browser_channel,
         "message": request.query_params.get("message", ""), "error": request.query_params.get("error", ""),
     })
+
+
+@app.post("/settings/browser")
+def update_browser_channel(browser_channel: str = Form("chrome"), db: Session = Depends(get_db)):
+    if browser_channel not in {"chrome", "msedge", "chromium"}:
+        return settings_redirect(error="浏览器选择无效。")
+    row = db.scalar(select(Setting).where(Setting.key == "browser_channel"))
+    if row:
+        row.value_json = browser_channel
+    else:
+        db.add(Setting(key="browser_channel", value_json=browser_channel))
+    db.commit()
+    AuditRepository(db).record("settings.browser_changed", "success", target_type="settings", output_summary=browser_channel)
+    return settings_redirect(message="浏览器选择已更新。")
 
 
 @app.post("/settings/ai-provider")

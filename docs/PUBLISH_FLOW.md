@@ -14,31 +14,23 @@ Statuses:
 - `returned_to_edit`
 - `cancelled`
 
-Allowed main transitions:
-
-1. `draft -> pending_review`
-2. `pending_review -> approved / rejected / draft`
-3. `approved -> publishing`
-4. `publishing -> waiting_final_confirm / failed`
-5. `waiting_final_confirm -> published / publish_uncertain / cancelled / returned_to_edit / failed`
-6. `returned_to_edit -> draft`
-
 Modes:
 
-- `dry_run`: fills and screenshots, never clicks publish.
-- `fill_only`: fills the real publish page and screenshots, never clicks publish.
-- `publish_after_final_confirm`: fills and screenshots first; clicking publish requires the final confirm action.
+- `dry_run`: pure local simulation. It does not open XHS, Chrome, Edge or Chromium. It validates fields/assets and creates a local preview.
+- `fill_only`: opens the real XHS publish page, waits for manual login when needed, fills the page, screenshots, and never clicks publish.
+- `publish_after_final_confirm`: same fill step first. The publish button is clicked only from the final confirmation page.
 
 Final confirmation:
 
 1. Open `/notes/<note_id>/final-review`.
-2. Review title, body, hashtags, media paths and screenshot.
-3. Click “最终确认并发布”.
-4. The app reopens the publish page, refills the content, clicks the publish button and saves another screenshot.
-5. The note becomes `publish_uncertain` unless a later explicit manual verification marks it published.
+2. Review title, body, hashtags, media, mode and screenshot/preview.
+3. `dry_run` previews cannot publish.
+4. For real fill modes, click `最终确认并发布`.
+5. The app reopens the publish page, refills content, clicks publish and saves a screenshot.
+6. If success cannot be verified, status becomes `publish_uncertain`.
 
 Failure handling:
 
-- Browser failures save a screenshot or placeholder PNG.
-- Failures are written to `browser_errors` and `audit_logs`.
-- Selector failures include the selector name and step.
+- Browser closed by user returns a friendly Chinese error.
+- Selector failures include the selector name and candidate list in `browser_errors`.
+- Browser failures save a screenshot or placeholder PNG and write `audit_logs`.

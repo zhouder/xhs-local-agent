@@ -50,13 +50,14 @@ class ContentPlanService:
         self.audit.record("content_plan.created", "success", target_type="content_plan", target_id=plan.id, metadata={"topics": len(topics)})
         return plan
 
-    def generate_drafts(self, plan_id: int) -> list[Note]:
+    def generate_drafts(self, plan_id: int, *, statuses: set[str] | None = None) -> list[Note]:
         if self.provider is None:
             raise RuntimeError("AI provider is required for batch generation.")
         plan = self.db.get(ContentPlan, plan_id)
         if not plan:
             raise LookupError("Content plan not found")
-        topics = list(self.db.scalars(select(ContentPlanTopic).where(ContentPlanTopic.plan_id == plan_id, ContentPlanTopic.status == "pending").order_by(ContentPlanTopic.id)))
+        statuses = statuses or {"pending"}
+        topics = list(self.db.scalars(select(ContentPlanTopic).where(ContentPlanTopic.plan_id == plan_id, ContentPlanTopic.status.in_(statuses)).order_by(ContentPlanTopic.id)))
         created: list[Note] = []
         schedule_cursor = datetime.now().replace(second=0, microsecond=0) + timedelta(days=1)
         for index, topic in enumerate(topics):

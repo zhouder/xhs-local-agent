@@ -1,8 +1,9 @@
 {% extends "base.html" %}{% block title %}内容计划{% endblock %}
 {% block content %}
-<h1>内容计划</h1>
+<h1>内容计划 / 批量生成</h1>
+{% if error %}<p class="form-error">{{ error }}</p>{% endif %}
 <section>
-<h2>新建计划</h2>
+<h2>新建内容计划</h2>
 <form method="post" action="/plans" class="stack">
   <div class="grid-form">
     <label>计划名称<input name="name" required></label>
@@ -10,18 +11,18 @@
     <label>内容风格<input name="style" value="经验分享型"></label>
     <label>目标<select name="goal"><option value="growth">涨粉</option><option value="saves">获赞收藏</option><option value="comments">引导评论</option><option value="authority">建立专业感</option></select></label>
   </div>
-  <label>主题列表（每行一个）<textarea name="topics_text" rows="6" required></textarea></label>
+  <label>主题列表（每行一个）<textarea name="topics_text" rows="6" required placeholder="例如：AI 工具如何提高写作效率"></textarea></label>
   <div class="grid-form">
     <label>每天生成几篇<input type="number" name="daily_count" value="1" min="1" max="10"></label>
     <label>建议发布时间段<textarea name="publish_times_text" rows="2">10:30
 20:30</textarea></label>
   </div>
-  <button class="primary">创建计划</button>
+  <button class="primary">创建计划，下一步批量生成草稿</button>
 </form>
 </section>
-<section><h2>计划列表</h2><table><tr><th>ID</th><th>名称</th><th>目标</th><th>状态</th><th>进度</th><th></th></tr>
+<section><h2>计划列表</h2><table><tr><th>ID</th><th>名称</th><th>目标</th><th>状态</th><th>进度</th><th>批量生成入口</th></tr>
 {% for plan in plans %}
-  <tr><td>{{ plan.id }}</td><td>{{ plan.name }}</td><td>{{ plan.goal }}</td><td>{{ plan.status }}</td><td>{{ progress.get(plan.id, {}) }}</td><td><a href="/plans/{{ plan.id }}">查看</a></td></tr>
+  <tr><td>{{ plan.id }}</td><td>{{ plan.name }}</td><td>{{ plan.goal }}</td><td>{{ plan.status }}</td><td>{{ progress.get(plan.id, {}) }}</td><td><a class="button primary" href="/plans/{{ plan.id }}">进入批量生成</a></td></tr>
 {% else %}
   <tr><td colspan="6">暂无计划</td></tr>
 {% endfor %}

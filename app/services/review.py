@@ -8,6 +8,7 @@ from app.models import NoteStatus, ReviewQueue
 from app.repositories import AuditRepository, NoteRepository
 from app.services.notifications import Notifier
 from app.services.state_machine import transition_note
+from app.services.hashtags import ensure_hashtags
 
 
 class ReviewService:
@@ -19,6 +20,11 @@ class ReviewService:
 
     def submit(self, note_id: int):
         note = self._note(note_id)
+        tags = ensure_hashtags(note.title, note.body, [])
+        if not tags:
+            self.audit.record("review.submitted", "blocked", target_type="note", target_id=note.id, error_message="hashtags_required")
+            raise ValueError("提交审核前必须至少有 3 个话题。")
+        note.hashtags_json = __import__("json").dumps(tags, ensure_ascii=False)
         transition_note(note, NoteStatus.PENDING_REVIEW)
         self.db.add(ReviewQueue(note_id=note.id))
         self.db.commit()

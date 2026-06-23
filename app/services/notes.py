@@ -10,6 +10,7 @@ from app.models import NoteStatus, ReviewQueue
 from app.repositories import AuditRepository, NoteRepository
 from app.schemas import GenerateNoteRequest
 from app.services.audit import audited
+from app.services.hashtags import ensure_hashtags
 from app.services.state_machine import transition_note
 
 
@@ -47,7 +48,7 @@ class NoteService:
             content = self.provider.generate_note(request)
         self.audit.record("ai.regenerate_note", "success", target_type="note", target_id=note.id)
         note.title, note.body = content.title, content.body
-        note.hashtags_json = json.dumps(content.hashtags, ensure_ascii=False)
+        note.hashtags_json = json.dumps(ensure_hashtags(content.title, content.body, content.hashtags), ensure_ascii=False)
         note.cover_prompt = content.cover_prompt
         note.media_requirements_json = content.media_requirements.model_dump_json()
         note.safety_json = content.safety.model_dump_json()

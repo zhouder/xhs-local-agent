@@ -8,6 +8,7 @@ def test_config_has_safety_defaults(settings):
     assert settings.app["host"] == "127.0.0.1"
     assert settings.publish["require_review"] is True
     assert settings.browser["dry_run"] is True
+    assert settings.browser["channel"] == "chrome"
     assert settings.browser["screenshots_dir"]
     assert settings.ai["default_provider"] == "mock"
     assert "openai_compatible" in settings.ai["providers"]

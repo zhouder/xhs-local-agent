@@ -10,7 +10,7 @@ from app import main
 from app.ai.mock import MockProvider
 from app.browser import xhs as xhs_module
 from app.database import get_db
-from app.models import AuditLog, CommandEvent, ContentPlanTopic, NoteStatus
+from app.models import AuditLog, CommandEvent, ContentPlanTopic, MediaAsset, NoteStatus
 from app.repositories import NoteRepository
 from app.schemas import GenerateNoteRequest
 from app.services.commands import CommandExecutor
@@ -20,6 +20,7 @@ from app.services.notifications import NullNotifier
 from app.services.publish import PublishService
 from app.services.review import ReviewService
 from app.services.state_machine import transition_note
+from app.services.hashtags import ensure_hashtags
 
 
 class RecordingLocator:
@@ -145,6 +146,21 @@ def test_fill_only_fills_without_click_and_final_confirm_clicks(db, settings, tm
     assert note.status == NoteStatus.PUBLISH_UNCERTAIN
 
 
+def test_dry_run_does_not_start_playwright_or_visit_xhs(db, settings, tmp_path, monkeypatch):
+    note = approved_note(db)
+    settings.browser["screenshots_dir"] = str(tmp_path)
+
+    def fail_if_called():
+        raise AssertionError("dry_run must not start Playwright")
+
+    monkeypatch.setattr(xhs_module, "sync_playwright", fail_if_called)
+    PublishService(db, settings, NullNotifier()).fill(note.id, mode="dry_run")
+    assert note.status == NoteStatus.WAITING_FINAL_CONFIRM
+    assert note.publish_mode == "dry_run"
+    assert "dry_run_preview" in note.publish_error_message
+    assert Path(note.publish_screenshot_path).exists()
+
+
 def test_invalid_and_unsupported_assets_block_publish(db, tmp_path):
     note = approved_note(db)
     with pytest.raises(ValueError, match="does not exist"):
@@ -153,6 +169,46 @@ def test_invalid_and_unsupported_assets_block_publish(db, tmp_path):
     bad.write_bytes(b"gif")
     with pytest.raises(ValueError, match="Unsupported"):
         MaterialService(db).set_note_assets(note.id, [str(bad)])
+
+
+def test_hashtags_are_extracted_or_generated():
+    assert ensure_hashtags("title", "正文 #AI #效率工具", [])[:2] == ["AI", "效率工具"]
+    generated = ensure_hashtags("编程工具", "正文没有话题", [])
+    assert len(generated) >= 3
+    assert all(not tag.startswith("#") for tag in generated)
+
+
+def test_media_upload_reorder_delete_and_generated_cover(db, tmp_path):
+    note = approved_note(db)
+    first = tmp_path / "a.png"
+    second = tmp_path / "b.jpg"
+    first.write_bytes(b"a")
+    second.write_bytes(b"b")
+
+    class Upload:
+        def __init__(self, path):
+            self.filename = path.name
+            self.file = path.open("rb")
+
+    uploads = [Upload(first), Upload(second)]
+    try:
+        MaterialService(db).upload_files(note.id, uploads)
+    finally:
+        for upload in uploads:
+            upload.file.close()
+    assets = list(db.scalars(select(MediaAsset).where(MediaAsset.note_id == note.id).order_by(MediaAsset.upload_order)))
+    assert [asset.upload_order for asset in assets] == [1, 2]
+    assert all(Path(asset.file_path).exists() for asset in assets)
+
+    MaterialService(db).reorder(note.id, [assets[1].id, assets[0].id])
+    reordered = list(db.scalars(select(MediaAsset).where(MediaAsset.note_id == note.id).order_by(MediaAsset.upload_order)))
+    assert [asset.id for asset in reordered] == [assets[1].id, assets[0].id]
+
+    MaterialService(db).delete(note.id, reordered[0].id)
+    assert db.get(MediaAsset, reordered[0].id) is None
+    cover = MaterialService(db).generate_cover(note.id)
+    assert cover.source_type == "generated_cover"
+    assert Path(cover.file_path).exists()
 
 
 def test_content_plan_creates_topics_and_generates_drafts(db):
@@ -194,6 +250,23 @@ def test_dashboard_counts_waiting_final_confirm(db):
     assert response.status_code == 200
     assert "waiting_final_confirm" in response.text
     assert str(note.id) in response.text
+
+
+def test_plan_detail_shows_batch_generation_buttons(db):
+    plan = ContentPlanService(db).create_plan(
+        name="Plan",
+        audience="builders",
+        style="tutorial",
+        goal="growth",
+        topics_text="topic one",
+    )
+    with client_for(db) as client:
+        response = client.get(f"/plans/{plan.id}")
+    main.app.dependency_overrides.clear()
+    assert response.status_code == 200
+    assert "批量生成草稿" in response.text
+    assert "只生成未生成主题" in response.text
+    assert "重新生成失败主题" in response.text
 
 
 def test_no_real_interaction_logic_added():

@@ -41,7 +41,8 @@ def main() -> int:
         for name, selector in selectors.items():
             if name == "submit_button":
                 continue
-            count = page.locator(selector).count()
+            candidates = selector if isinstance(selector, list) else [selector]
+            count = sum(page.locator(item).count() for item in candidates)
             print(f"{name}: {count}")
             ok = ok and count >= 0
         context.close()

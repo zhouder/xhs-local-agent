@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 from app.models import AuditLog, MediaAsset, Note
 from app.schemas import NoteContent
 from app.security import redact_secrets
+from app.services.hashtags import ensure_hashtags
 
 
 class AuditRepository:
@@ -38,7 +39,7 @@ class NoteRepository:
             controversial_title=request.controversial_title, educational=request.educational,
             growth_oriented=request.growth_oriented,
             title=content.title, body=content.body,
-            hashtags_json=json.dumps(content.hashtags, ensure_ascii=False),
+            hashtags_json=json.dumps(ensure_hashtags(content.title, content.body, content.hashtags), ensure_ascii=False),
             cover_prompt=content.cover_prompt,
             media_requirements_json=content.media_requirements.model_dump_json(),
             safety_json=content.safety.model_dump_json(),
@@ -56,7 +57,7 @@ class NoteRepository:
     def update_content(self, note: Note, update) -> Note:
         note.title = update.title
         note.body = update.body
-        note.hashtags_json = json.dumps(update.hashtags, ensure_ascii=False)
+        note.hashtags_json = json.dumps(ensure_hashtags(update.title, update.body, update.hashtags), ensure_ascii=False)
         note.cover_prompt = update.cover_prompt
         if update.media_path:
             self.replace_media_paths(note.id, [update.media_path])
@@ -81,4 +82,5 @@ class NoteRepository:
                 asset_type="image",
                 upload_order=index,
                 status="ready",
+                source_type="upload",
             ))

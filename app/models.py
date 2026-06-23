@@ -105,6 +105,9 @@ class MediaAsset(TimestampMixin, Base):
     upload_order: Mapped[int] = mapped_column(Integer, default=1)
     status: Mapped[str] = mapped_column(String(30), default="ready")
     error_message: Mapped[str] = mapped_column(Text, default="")
+    source_type: Mapped[str] = mapped_column(String(40), default="upload")
+    source_url: Mapped[str] = mapped_column(String(1000), default="")
+    license_note: Mapped[str] = mapped_column(Text, default="")
 
 
 class Comment(TimestampMixin, Base):

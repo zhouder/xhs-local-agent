@@ -6,7 +6,10 @@ app:
 
 browser:
   type: "chromium"
-  channel: "msedge"
+  channel: "chrome"
+  mode: "persistent"
+  profile_dir: "data/browser-profiles/chrome"
+  cdp_url: "http://127.0.0.1:9222"
   headless: false
   slow_mo_ms: 300
   screenshots_dir: "data/screenshots"
