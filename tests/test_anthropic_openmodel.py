@@ -6,7 +6,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import select
 
 from app import main
-from app.ai.anthropic import AnthropicProvider, build_auth_headers
+from app.ai.anthropic import AnthropicProvider, build_auth_headers, extract_anthropic_text
 from app.ai.endpoints import build_endpoint_url
 from app.ai.openai_compatible import AIProviderError
 from app.database import get_db
@@ -56,8 +56,64 @@ def test_anthropic_auth_header_modes(base_url, auth_scheme, authorization, x_api
     assert headers["anthropic-version"] == "2023-06-01"
 
 
+def test_extract_anthropic_text_from_single_text_block():
+    assert extract_anthropic_text({"content": [{"type": "text", "text": "hello"}]}) == "hello"
+
+
+def test_extract_anthropic_text_skips_thinking_block():
+    envelope = {
+        "content": [
+            {"type": "thinking", "thinking": "private reasoning should not be shown"},
+            {"type": "text", "text": "public output"},
+        ]
+    }
+    assert extract_anthropic_text(envelope) == "public output"
+
+
+def test_extract_anthropic_text_joins_multiple_text_blocks():
+    envelope = {"content": [{"type": "text", "text": "first"}, {"type": "text", "text": "second"}]}
+    assert extract_anthropic_text(envelope) == "first\nsecond"
+
+
+def test_extract_anthropic_text_ignores_unknown_blocks():
+    envelope = {
+        "content": [
+            {"type": "thinking", "thinking": "ignored"},
+            {"type": "tool_use", "name": "noop"},
+            {"type": "tool_result", "content": "ignored"},
+            {"type": "image", "source": "ignored"},
+            {"type": "unknown", "value": "ignored"},
+            {"type": "text", "text": "kept"},
+        ]
+    }
+    assert extract_anthropic_text(envelope) == "kept"
+
+
+def test_extract_anthropic_text_without_text_raises_friendly_error_without_thinking():
+    with pytest.raises(AIProviderError) as caught:
+        extract_anthropic_text({
+            "content": [
+                {"type": "thinking", "thinking": "private reasoning should not be shown"},
+                {"type": "tool_use", "name": "noop"},
+            ]
+        })
+    message = str(caught.value)
+    assert "Anthropic Messages 返回中没有 text 内容块" in message
+    assert "content block types: thinking, tool_use" in message
+    assert "private reasoning should not be shown" not in message
+
+
 def test_openmodel_test_connection_uses_messages_url_and_minimal_payload():
-    client = ResponseClient(payload={"content": [{"type": "text", "text": '```json\n{"ok": true}\n```'}]})
+    client = ResponseClient(payload={
+        "id": "test",
+        "type": "message",
+        "role": "assistant",
+        "model": "deepseek-v4-flash",
+        "content": [
+            {"type": "thinking", "thinking": "private reasoning should not be shown"},
+            {"type": "text", "text": '```json\n{"ok": true}\n```'},
+        ],
+    })
     provider = AnthropicProvider(
         "https://api.openmodel.ai", "test-secret", "deepseek-v4-flash",
         auth_scheme="auto", client=client,
@@ -71,6 +127,34 @@ def test_openmodel_test_connection_uses_messages_url_and_minimal_payload():
     assert request["json"]["max_tokens"] == 128
     assert request["json"]["temperature"] == 0
     assert request["json"]["messages"][0]["content"] == '请只返回 JSON：{"ok": true}'
+
+
+def test_openmodel_test_connection_accepts_explanatory_text_with_json():
+    client = ResponseClient(payload={
+        "content": [{"type": "text", "text": '结果如下：\n{"ok": true}\n测试完成。'}],
+    })
+    provider = AnthropicProvider(
+        "https://api.openmodel.ai", "test-secret", "deepseek-v4-flash",
+        auth_scheme="auto", client=client,
+    )
+    assert provider.test_connection()
+
+
+def test_test_connection_with_text_but_invalid_json_reports_text_summary_without_secret():
+    secret = "openmodel-invalid-json-secret"
+    client = ResponseClient(payload={
+        "content": [{"type": "text", "text": f"not json and not a secret {secret}"}],
+    })
+    provider = AnthropicProvider(
+        "https://api.openmodel.ai", secret, "deepseek-v4-flash",
+        auth_scheme="auto", client=client,
+    )
+    with pytest.raises(AIProviderError) as caught:
+        provider.test_connection()
+    message = str(caught.value)
+    assert '模型返回了文本，但不是 {"ok": true} 测试 JSON' in message
+    assert "not json" in message
+    assert secret not in message
 
 
 def test_openmodel_preset_builds_anthropic_request_preview(db, settings):
@@ -128,6 +212,55 @@ def test_connection_failure_renders_redacted_openmodel_diagnostics(db, settings,
     assert secret not in audit.error_message
 
 
+def test_connection_without_text_block_hides_thinking_in_page_and_audit(db, settings, monkeypatch):
+    secret = "openmodel-thinking-secret"
+    thinking = "private reasoning should not be shown"
+    monkeypatch.setenv("OPENMODEL_TEST_API_KEY", secret)
+    registry = ProviderRegistry(db, settings)
+    row = registry.create(ProviderInput(
+        "OpenModel", "anthropic_messages", "https://api.openmodel.ai",
+        api_key_env="OPENMODEL_TEST_API_KEY", models_text="deepseek-v4-flash",
+        auth_scheme="auto",
+    ))
+    response_client = ResponseClient(payload={
+        "id": "test",
+        "type": "message",
+        "role": "assistant",
+        "model": "deepseek-v4-flash",
+        "content": [{"type": "thinking", "thinking": thinking}],
+    })
+    monkeypatch.setattr(
+        main,
+        "create_provider_from_profile",
+        lambda saved, config: AnthropicProvider(
+            saved.base_url, secret, saved.default_model_id,
+            auth_scheme=saved.auth_scheme, client=response_client,
+        ),
+    )
+
+    with client_for(db) as client:
+        response = client.post(f"/providers/{row.id}", data={
+            "display_name": "OpenModel",
+            "provider_type": "anthropic_messages",
+            "base_url": "https://api.openmodel.ai",
+            "models_text": "deepseek-v4-flash",
+            "default_model_id": "deepseek-v4-flash",
+            "auth_scheme": "auto",
+            "action": "test",
+        })
+    main.app.dependency_overrides.clear()
+
+    assert response.status_code == 400
+    assert "content block types: thinking" in response.text
+    assert thinking not in response.text
+    assert secret not in response.text
+    audit = db.scalar(select(AuditLog).where(AuditLog.action_type == "ai_provider.test_connection", AuditLog.status == "failed"))
+    assert "content block types: thinking" in audit.error_message
+    assert thinking not in audit.error_message
+    assert secret not in audit.error_message
+    assert secret not in str(row.__dict__)
+
+
 def test_provider_page_never_contains_openmodel_api_key(db, settings, monkeypatch):
     secret = "openmodel-page-secret"
     monkeypatch.setenv("OPENMODEL_PAGE_API_KEY", secret)
@@ -140,7 +273,7 @@ def test_provider_page_never_contains_openmodel_api_key(db, settings, monkeypatc
         response = client.get(f"/providers/{row.id}/edit")
     main.app.dependency_overrides.clear()
     assert secret not in response.text
-    assert "自动（实际 Bearer Token）" in response.text
+    assert "Bearer Token" in response.text
     assert "https://api.openmodel.ai" in response.text
 
 

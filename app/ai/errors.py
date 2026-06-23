@@ -6,7 +6,7 @@ from app.security import redact_secrets
 def friendly_connection_error(error: Exception) -> str:
     text = str(redact_secrets(str(error)))
     folded = text.casefold()
-    if "请求 url：" in folded and "content-type：" in folded:
+    if ("请求 url：" in folded and "content-type：" in folded) or "content block types:" in folded:
         return text[:1000]
     if "http 401" in folded or "unauthorized" in folded:
         return "401 Unauthorized，请检查 API Key。"
@@ -18,7 +18,7 @@ def friendly_connection_error(error: Exception) -> str:
         return "400 Bad Request，请检查模型 ID 和请求参数。"
     if "timed out" in folded or "timeout" in folded:
         return "请求超时，请检查网络或 Base URL。"
-    if "invalid structured" in folded or "not valid json" in folded or "invalid response envelope" in folded or "not valid json" in folded:
+    if "invalid structured" in folded or "not valid json" in folded or "invalid response envelope" in folded:
         return "接口返回的不是可解析 JSON。"
     if "model" in folded and ("not" in folded or "不存在" in text):
         return "模型不存在，请检查模型 ID。"

@@ -33,6 +33,40 @@ def build_auth_headers(api_key: str, auth_scheme: str, base_url: str) -> dict[st
     return headers
 
 
+def _content_block_types(envelope: dict) -> list[str]:
+    content = envelope.get("content")
+    if not isinstance(content, list):
+        return []
+    block_types: list[str] = []
+    for block in content:
+        if isinstance(block, dict):
+            block_types.append(str(block.get("type") or "unknown"))
+        else:
+            block_types.append(type(block).__name__)
+    return block_types
+
+
+def extract_anthropic_text(envelope: dict) -> str:
+    content = envelope.get("content")
+    if not isinstance(content, list):
+        raise AIProviderError("Anthropic Messages 返回中没有 text 内容块。content block types: none")
+
+    texts = [
+        block["text"]
+        for block in content
+        if isinstance(block, dict) and block.get("type") == "text" and isinstance(block.get("text"), str)
+    ]
+    if texts:
+        return "\n".join(texts)
+
+    block_types = ", ".join(_content_block_types(envelope)) or "none"
+    raise AIProviderError(f"Anthropic Messages 返回中没有 text 内容块。content block types: {block_types}")
+
+
+def _safe_text_summary(text: str, limit: int = 200) -> str:
+    return " ".join(str(redact_secrets(text)).split())[:limit]
+
+
 class AnthropicProvider(OpenAICompatibleProvider):
     provider_name = "anthropic_messages"
 
@@ -41,15 +75,48 @@ class AnthropicProvider(OpenAICompatibleProvider):
         resolve_auth_scheme(auth_scheme, self.base_url)
         self.auth_scheme = auth_scheme
 
-    def _diagnostic(self, response: httpx.Response, request_url: str, *, invalid_json: bool) -> str:
+    def _diagnostic(
+        self,
+        response: httpx.Response,
+        request_url: str,
+        *,
+        invalid_json: bool,
+        envelope: dict | None = None,
+    ) -> str:
         content_type = response.headers.get("Content-Type", "未提供")
-        summary = str(redact_secrets(response.text))
         safe_url = str(redact_secrets(request_url))
+
+        if invalid_json:
+            summary = str(redact_secrets(response.text))
+            summary = " ".join(summary.split())[:300] or "（空响应）"
+        else:
+            if envelope is None:
+                try:
+                    parsed = response.json()
+                    envelope = parsed if isinstance(parsed, dict) else None
+                except ValueError:
+                    envelope = None
+            if envelope is None:
+                summary = str(redact_secrets(response.text))
+                summary = " ".join(summary.split())[:300] or "（空响应）"
+            else:
+                text_preview = ""
+                try:
+                    text_preview = _safe_text_summary(extract_anthropic_text(envelope), 200)
+                except AIProviderError:
+                    text_preview = ""
+                summary = (
+                    f"id={envelope.get('id', '')}; model={envelope.get('model', '')}; "
+                    f"role={envelope.get('role', '')}; content block types: "
+                    f"{', '.join(_content_block_types(envelope)) or 'none'}; "
+                    f"has text block: {'yes' if text_preview else 'no'}; "
+                    f"text摘要: {text_preview}"
+                )
+
         if self._api_key:
             summary = summary.replace(self._api_key, "[REDACTED]")
             safe_url = safe_url.replace(self._api_key, "[REDACTED]")
-        summary = " ".join(summary.split())[:300] or "（空响应）"
-        reason = "返回内容不是 JSON" if invalid_json else "请求失败"
+        reason = "返回内容不是 JSON" if invalid_json else f"HTTP {response.status_code}" if response.is_error else "响应解析失败"
         resolved = resolve_auth_scheme(self.auth_scheme, self.base_url)
         auth = self.auth_scheme if self.auth_scheme != "auto" else f"auto（实际 {resolved}）"
         return (
@@ -58,13 +125,19 @@ class AnthropicProvider(OpenAICompatibleProvider):
         )
 
     def _raw_completion(
-        self, system: str, user: str, *, max_tokens: int | None = None, temperature: float | None = None,
+        self,
+        system: str,
+        user: str,
+        *,
+        max_tokens: int | None = None,
+        temperature: float | None = None,
     ) -> str:
         payload = {
             "model": self.model,
             "max_tokens": max_tokens if max_tokens is not None else int(self.extra_body.get("max_tokens", 2048)),
             "temperature": temperature if temperature is not None else float(self.extra_body.get("temperature", 0.6)),
-            "system": system, "messages": [{"role": "user", "content": user}],
+            "system": system,
+            "messages": [{"role": "user", "content": user}],
         }
         headers = {**build_auth_headers(self._api_key, self.auth_scheme, self.base_url), **self.extra_headers}
         request_url = build_endpoint_url(self.base_url, "anthropic_messages")
@@ -75,19 +148,17 @@ class AnthropicProvider(OpenAICompatibleProvider):
             raise AIProviderError("anthropic_messages request timed out") from None
         except httpx.HTTPError:
             raise AIProviderError("anthropic_messages request failed due to a network error") from None
+
         try:
-            envelope = response.json()
+            parsed = response.json()
         except ValueError:
             raise AIProviderError(self._diagnostic(response, request_url, invalid_json=True)) from None
+        envelope = parsed if isinstance(parsed, dict) else {}
         if response.is_error:
+            raise AIProviderError(self._diagnostic(response, request_url, invalid_json=False, envelope=envelope)) from None
+        if not isinstance(parsed, dict):
             raise AIProviderError(self._diagnostic(response, request_url, invalid_json=False)) from None
-        try:
-            content = envelope["content"][0]["text"]
-        except (KeyError, IndexError, TypeError):
-            raise AIProviderError(self._diagnostic(response, request_url, invalid_json=False)) from None
-        if not isinstance(content, str):
-            raise AIProviderError(self._diagnostic(response, request_url, invalid_json=False))
-        return content
+        return extract_anthropic_text(parsed)
 
     def test_connection(self) -> bool:
         content = self._raw_completion(
@@ -99,4 +170,7 @@ class AnthropicProvider(OpenAICompatibleProvider):
         try:
             return parse_json_object(content).get("ok") is True
         except (ValueError, TypeError):
-            raise AIProviderError("Anthropic Messages 返回内容不是可解析的测试 JSON。") from None
+            summary = _safe_text_summary(content, 200)
+            if self._api_key:
+                summary = summary.replace(self._api_key, "[REDACTED]")
+            raise AIProviderError(f'模型返回了文本，但不是 {{"ok": true}} 测试 JSON。文本摘要：{summary}') from None
