@@ -31,6 +31,13 @@ def test_fastapi_publish_routes_are_async():
     assert inspect.iscoroutinefunction(main.retry_fill)
 
 
+def test_selector_script_targets_publish_urls():
+    source = (ROOT / "scripts/check_xhs_selectors.py").read_text(encoding="utf-8")
+    assert "--target" in source
+    assert 'default="image"' in source
+    assert "resolve_publish_url(settings, args.target)" in source
+
+
 def test_playwright_click_is_limited_to_tabs_and_final_confirm_submit_button():
     source = (ROOT / "app/browser/xhs.py").read_text(encoding="utf-8")
     tree = ast.parse(source)

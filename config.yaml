@@ -16,6 +16,10 @@ browser:
   dry_run: true
   keep_open_on_error: true
   publish_url: "https://creator.xiaohongshu.com/publish/publish"
+  publish_urls:
+    video: "https://creator.xiaohongshu.com/publish/publish?from=menu&target=video"
+    image: "https://creator.xiaohongshu.com/publish/publish?from=menu&target=image"
+    article: "https://creator.xiaohongshu.com/publish/publish?from=menu&target=article"
 
 ai:
   default_provider: "mock"

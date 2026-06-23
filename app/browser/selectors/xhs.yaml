@@ -8,6 +8,30 @@ publish:
     - '[role="tab"]:has-text("上传图文")'
     - '[role="tab"]:has-text("写长文")'
 
+  image_page_ready:
+    - 'input[type="file"]'
+    - 'text=上传图文'
+    - 'button:has-text("上传图片")'
+    - 'text=选择图片'
+    - '[class*="upload"]'
+
+  article_page_ready:
+    - 'text=写长文'
+    - 'input[placeholder*="标题"]'
+    - 'textarea[placeholder*="标题"]'
+    - '[contenteditable="true"]'
+
+  video_page_ready:
+    - 'text=上传视频'
+    - 'button:has-text("上传视频")'
+    - '[class*="upload"]'
+
+  image_upload_area:
+    - 'input[type="file"]'
+    - 'button:has-text("上传图片")'
+    - 'text=拖拽图片到此处或点击上传'
+    - '[class*="upload"]'
+
   tab_upload_video:
     - 'text=上传视频'
     - 'button:has-text("上传视频")'

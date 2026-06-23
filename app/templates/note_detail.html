@@ -101,6 +101,11 @@
   <aside class="card sticky-panel">
     <h2>审核与发布</h2>
     <p class="alert warning">dry_run 只生成本地预览，不打开小红书。fill_only 会打开小红书并填表，但不会发布。最终确认后才允许点击发布按钮。</p>
+    {% if media_views %}
+      <p class="alert success">有图片素材：fill_only 将直接打开小红书【上传图文】页面 target=image。</p>
+    {% else %}
+      <p class="alert success">无图片素材：fill_only 将直接打开小红书【写长文】页面 target=article。</p>
+    {% endif %}
     <div class="actions vertical">
       {% if note.status in ['draft'] %}
         <form method="post" action="/notes/{{ note.id }}/submit"><button class="primary full">提交审核</button></form>

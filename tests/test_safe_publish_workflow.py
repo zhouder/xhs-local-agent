@@ -10,8 +10,9 @@ from sqlalchemy import select
 from app import main
 from app.ai.mock import MockProvider
 from app.browser import xhs as xhs_module
+from app.browser.xhs import detect_publish_target_from_url, resolve_publish_url
 from app.database import get_db
-from app.models import AuditLog, CommandEvent, ContentPlanTopic, MediaAsset, NoteStatus
+from app.models import AuditLog, BrowserError, CommandEvent, ContentPlanTopic, MediaAsset, NoteStatus
 from app.repositories import NoteRepository
 from app.schemas import GenerateNoteRequest
 from app.services.commands import CommandExecutor
@@ -49,9 +50,11 @@ class RecordingLocator:
 
     async def fill(self, value):
         self.page.filled.append(value)
+        self.page.operations.append(("fill", self.selector, value))
 
     async def set_input_files(self, paths):
         self.page.files = list(paths)
+        self.page.operations.append(("set_input_files", self.selector, list(paths)))
 
     async def click(self):
         self.page.clicked_selectors.append(self.selector)
@@ -80,9 +83,18 @@ class RecordingPage:
         self.url = ""
         self.current_tab = "upload_video"
         self.clicked_selectors = []
+        self.goto_urls = []
+        self.operations = []
 
     async def goto(self, url):
         self.url = url
+        self.goto_urls.append(url)
+        if "target=image" in url:
+            self.current_tab = "upload_image"
+        elif "target=article" in url:
+            self.current_tab = "long_text"
+        elif "target=video" in url:
+            self.current_tab = "upload_video"
 
     def locator(self, selector):
         return RecordingLocator(self, selector)
@@ -92,6 +104,12 @@ class RecordingPage:
 
     async def screenshot(self, path, full_page):
         Path(path).write_bytes(b"fake-png")
+
+
+class VideoRedirectPage(RecordingPage):
+    async def goto(self, url):
+        await super().goto(url)
+        self.url = "https://creator.xiaohongshu.com/publish/publish?from=menu&target=video"
 
 
 class FakeContext:
@@ -156,6 +174,19 @@ def approved_note(db):
     return note
 
 
+def test_resolve_publish_url_uses_target_urls(settings):
+    assert "target=image" in resolve_publish_url(settings, "image")
+    assert "target=article" in resolve_publish_url(settings, "article")
+    assert "target=video" in resolve_publish_url(settings, "video")
+
+
+def test_detect_publish_target_from_url():
+    assert detect_publish_target_from_url("https://creator.xiaohongshu.com/publish/publish?from=menu&target=video") == "video"
+    assert detect_publish_target_from_url("https://creator.xiaohongshu.com/publish/publish?from=menu&target=image") == "image"
+    assert detect_publish_target_from_url("https://creator.xiaohongshu.com/publish/publish?from=menu&target=article") == "article"
+    assert detect_publish_target_from_url("https://creator.xiaohongshu.com/publish/publish") == "unknown"
+
+
 def test_waiting_final_confirm_is_required_for_final_publish(db):
     note = approved_note(db)
     with pytest.raises(ValueError):
@@ -177,11 +208,13 @@ def test_fill_only_fills_without_click_and_final_confirm_clicks(db, settings, tm
 
     PublishService(db, settings, NullNotifier()).fill(note.id, mode="fill_only")
     assert not fill_page.clicked
-    assert any("上传图文" in selector for selector in fill_page.clicked_selectors)
-    title_index = next(index for index, selector in enumerate(fill_page.clicked_selectors + ["title"]) if "上传图文" in selector)
-    assert title_index == 0
-    assert note.status == NoteStatus.WAITING_FINAL_CONFIRM
+    assert any("target=image" in url for url in fill_page.goto_urls)
+    assert not any("target=video" in url for url in fill_page.goto_urls)
+    upload_index = next(index for index, op in enumerate(fill_page.operations) if op[0] == "set_input_files")
+    fill_index = next(index for index, op in enumerate(fill_page.operations) if op[0] == "fill")
+    assert upload_index < fill_index
     assert note.publish_screenshot_path
+    assert note.status == NoteStatus.WAITING_FINAL_CONFIRM
 
     PublishService(db, settings, NullNotifier()).final_confirm(note.id)
     assert final_page.clicked
@@ -213,8 +246,33 @@ def test_fill_only_without_assets_chooses_long_text_tab(db, settings, tmp_path, 
     page = RecordingPage()
     monkeypatch.setattr(xhs_module, "async_playwright", lambda: FakePlaywright([page]))
     PublishService(db, settings, NullNotifier()).fill(note.id, mode="fill_only")
-    assert any("写长文" in selector for selector in page.clicked_selectors)
-    assert not any("上传图文" in selector for selector in page.clicked_selectors)
+    assert any("target=article" in url for url in page.goto_urls)
+    assert not any("target=video" in url for url in page.goto_urls)
+    assert not any(op[0] == "set_input_files" for op in page.operations)
+
+
+def test_video_asset_is_blocked_before_publish(db, settings, tmp_path):
+    note = approved_note(db)
+    video = tmp_path / "clip.mp4"
+    video.write_bytes(b"video")
+    db.add(MediaAsset(note_id=note.id, path=str(video), file_path=str(video), media_type="video", asset_type="video", upload_order=1, status="ready"))
+    db.commit()
+    with pytest.raises(ValueError, match="视频发布暂未实现"):
+        PublishService(db, settings, NullNotifier()).fill(note.id, mode="fill_only")
+
+
+def test_target_video_redirect_records_requested_and_actual_target(db, settings, tmp_path, monkeypatch):
+    note = approved_note(db)
+    asset = tmp_path / "cover.png"
+    asset.write_bytes(b"png")
+    MaterialService(db).set_note_assets(note.id, [str(asset)])
+    settings.browser["screenshots_dir"] = str(tmp_path)
+    monkeypatch.setattr(xhs_module, "async_playwright", lambda: FakePlaywright([VideoRedirectPage()]))
+    with pytest.raises(RuntimeError, match="target=video"):
+        PublishService(db, settings, NullNotifier()).fill(note.id, mode="fill_only")
+    error = db.scalar(select(BrowserError).where(BrowserError.note_id == note.id))
+    assert '"requested_target": "image"' in error.metadata_json
+    assert '"actual_target": "video"' in error.metadata_json
 
 
 def test_invalid_and_unsupported_assets_block_publish(db, tmp_path):
