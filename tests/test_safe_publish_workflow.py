@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 
 import pytest
@@ -10,7 +11,7 @@ from sqlalchemy import select
 from app import main
 from app.ai.mock import MockProvider
 from app.browser import xhs as xhs_module
-from app.browser.xhs import detect_publish_target_from_url, resolve_publish_url
+from app.browser.xhs import async_click_text_to_image_entry, async_text_to_image_candidates, detect_publish_target_from_url, resolve_publish_url
 from app.database import get_db
 from app.models import AuditLog, BrowserError, CommandEvent, ContentPlanTopic, MediaAsset, NoteStatus
 from app.repositories import NoteRepository
@@ -74,6 +75,12 @@ class RecordingLocator:
     async def inner_text(self, timeout=1000):
         return self.selector
 
+    async def is_visible(self):
+        return True
+
+    async def bounding_box(self):
+        return {"x": 1, "y": 2, "width": 100, "height": 40}
+
 
 class RecordingPage:
     def __init__(self):
@@ -104,6 +111,64 @@ class RecordingPage:
 
     async def screenshot(self, path, full_page):
         Path(path).write_bytes(b"fake-png")
+
+
+class TextToImageFilteredLocator(RecordingLocator):
+    async def count(self):
+        if self.selector in {'text=上传图片', 'input[type="file"]', '[class*="upload"]'}:
+            return 1
+        if "写文字生成图片" in self.selector or "文字配图" in self.selector:
+            return 1
+        return 0
+
+    async def inner_text(self, timeout=1000):
+        if self.selector in {'text=上传图片', 'input[type="file"]', '[class*="upload"]'}:
+            return "上传图片 拖拽图片到此处或点击上传"
+        return "写文字生成图片"
+
+
+class TextToImageFilteredPage(RecordingPage):
+    def locator(self, selector):
+        return TextToImageFilteredLocator(self, selector)
+
+
+class FakeFileChooserContext:
+    def __init__(self, should_trigger: bool):
+        self.should_trigger = should_trigger
+        self.value = None
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, traceback):
+        if self.should_trigger:
+            return False
+        raise xhs_module.PlaywrightTimeoutError("no file chooser")
+
+
+class FileChooserGuardLocator(RecordingLocator):
+    async def count(self):
+        if "写文字生成图片" in self.selector or "文字配图" in self.selector:
+            return 1
+        return 0
+
+    async def click(self):
+        self.page.clicked_selectors.append(self.selector)
+        if self.page.trigger_filechooser:
+            self.page.filechooser_triggered = True
+
+
+class FileChooserGuardPage(RecordingPage):
+    def __init__(self, trigger_filechooser: bool):
+        super().__init__()
+        self.trigger_filechooser = trigger_filechooser
+        self.filechooser_triggered = False
+
+    def locator(self, selector):
+        return FileChooserGuardLocator(self, selector)
+
+    def expect_file_chooser(self, timeout=0):
+        return FakeFileChooserContext(self.trigger_filechooser)
 
 
 class VideoRedirectPage(RecordingPage):
@@ -260,7 +325,34 @@ def test_fill_only_without_assets_uses_text_to_image_not_article(db, settings, t
     assert not any("target=article" in url for url in page.goto_urls)
     assert not any("target=video" in url for url in page.goto_urls)
     assert not any(op[0] == "set_input_files" for op in page.operations)
-    assert any("写文字生成图片" in selector or "文字生成图片" in selector for selector in page.clicked_selectors)
+    assert any("写文字生成图片" in selector or "文字配图" in selector for selector in page.clicked_selectors)
+
+
+def test_text_to_image_candidates_filter_upload_entries():
+    page = TextToImageFilteredPage()
+    candidates = asyncio.run(async_text_to_image_candidates(page, ['text=上传图片', '[class*="upload"]', 'button:has-text("写文字生成图片")']))
+    assert any(candidate.upload_like for candidate in candidates)
+    assert any(not candidate.upload_like and "写文字生成图片" in candidate.selector for candidate in candidates)
+
+
+def test_text_to_image_entry_skips_upload_and_clicks_safe_candidate():
+    page = TextToImageFilteredPage()
+    hit = asyncio.run(async_click_text_to_image_entry(page, ['text=上传图片', '[class*="upload"]', 'button:has-text("写文字生成图片")']))
+    assert "写文字生成图片" in hit.selector or "文字配图" in hit.selector
+    assert not any(selector in {'text=上传图片', '[class*="upload"]'} for selector in page.clicked_selectors)
+
+
+def test_text_to_image_entry_skips_filechooser_candidate_then_fails_cleanly():
+    page = FileChooserGuardPage(trigger_filechooser=True)
+    with pytest.raises(xhs_module.TextToImageFileChooserError, match="本地文件选择器"):
+        asyncio.run(async_click_text_to_image_entry(page, ['button:has-text("写文字生成图片")']))
+    assert page.filechooser_triggered
+
+
+def test_text_to_image_entry_success_when_no_filechooser():
+    page = FileChooserGuardPage(trigger_filechooser=False)
+    hit = asyncio.run(async_click_text_to_image_entry(page, ['button:has-text("写文字生成图片")']))
+    assert "写文字生成图片" in hit.selector or "文字配图" in hit.selector
 
 
 def test_video_upload_uses_video_target_and_does_not_click_publish(db, settings, tmp_path, monkeypatch):

@@ -99,6 +99,14 @@ fill_only 后最终确认页显示真实页面截图。只有状态为 `waiting_
 
 `--open-page` 会使用同一个 Chrome profile 打开对应发布页，输出每个 selector key 的候选、命中情况、命中序号、元素 tag、placeholder 和文本摘要，并保存诊断截图。它不会上传文件、不会填写正文、不会发布、不会读取 cookie。兼容别名：`--target image`、`--target text2image`。
 
+文字生图诊断默认只列出入口候选，不点击入口。需要验证入口点击时，显式加 `--click-entry`：
+
+```powershell
+.\.venv\Scripts\python.exe scripts\check_xhs_selectors.py --open-page --target image-text-to-image --click-entry
+```
+
+`--click-entry` 会跳过上传图片、拖拽上传、`input[type=file]` 等候选；如果候选触发本地文件选择器，会立即报错并停止，避免误上传。
+
 ## 内容计划与批量生成
 
 入口：顶部导航“内容计划”。

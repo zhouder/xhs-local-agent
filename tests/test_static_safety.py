@@ -38,6 +38,9 @@ def test_selector_script_targets_publish_urls():
     assert 'default="image-upload"' in source
     assert "resolve_publish_url(settings, publish_kind)" in source
     assert "image-text-to-image" in source
+    assert "--click-entry" in source
+    assert "click_text_to_image_entry(page, candidates)" in source
+    assert "prompt_input: SKIPPED" in source
     assert "video" in source
 
 

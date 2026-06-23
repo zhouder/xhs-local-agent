@@ -24,6 +24,19 @@ TARGET_ALIASES = {
     "text2image": "image_text_to_image",
     "image-text-to-image": "image_text_to_image",
 }
+UPLOAD_ENTRY_TEXT = ("上传图片", "拖拽图片", "点击上传", "上传图文", "input[type=file]")
+UPLOAD_ENTRY_SELECTOR = ("input[type=\"file\"]", "input[type='file']", "[class*=\"upload\"]", "[class*='upload']", "text=上传图片", "text=图片配图")
+TEXT_TO_IMAGE_FALLBACK_ENTRY_SELECTORS = [
+    'button:has-text("文字配图")',
+    '[role="button"]:has-text("文字配图")',
+    'button:has-text("写文字生成图片")',
+    '[role="button"]:has-text("写文字生成图片")',
+    'div:has-text("写文字生成图片") button',
+    'div:has-text("写文字生成图片") [role="button"]',
+    '[class*="card"]:has-text("写文字生成图片") button',
+    '[class*="card"]:has-text("写文字生成图片") [role="button"]',
+    'div:has-text("写文字生成图片")',
+]
 
 
 def selector_list(value) -> list[str]:
@@ -52,6 +65,80 @@ def first_visible(page, candidates: list[str]):
     return None, "", None
 
 
+def is_upload_like_candidate(selector: str, text: str) -> bool:
+    normalized_selector = (selector or "").casefold().replace(" ", "")
+    normalized_text = " ".join((text or "").split())
+    if any(token.casefold().replace(" ", "") in normalized_selector for token in UPLOAD_ENTRY_SELECTOR):
+        return True
+    return any(token in normalized_text for token in UPLOAD_ENTRY_TEXT)
+
+
+def locator_details(locator, selector: str) -> dict:
+    tag = ""
+    text = ""
+    box = None
+    visible = None
+    try:
+        tag = locator.evaluate("node => node.tagName ? node.tagName.toLowerCase() : ''")
+    except Exception:
+        pass
+    try:
+        text = (locator.inner_text(timeout=1000) or "").strip().replace("\n", " ")[:200]
+    except Exception:
+        pass
+    try:
+        box = locator.bounding_box()
+    except Exception:
+        pass
+    try:
+        visible = locator.is_visible()
+    except Exception:
+        pass
+    return {"selector": selector, "tag": tag, "text": text, "box": box, "visible": visible, "upload_like": is_upload_like_candidate(selector, text)}
+
+
+def text_to_image_candidates(page, selectors: list[str]) -> list[dict]:
+    all_selectors = []
+    for selector in selectors + TEXT_TO_IMAGE_FALLBACK_ENTRY_SELECTORS:
+        if selector not in all_selectors:
+            all_selectors.append(selector)
+    results = []
+    for selector in all_selectors:
+        try:
+            locator = page.locator(selector)
+            if locator.count():
+                results.append({"locator": locator.first, **locator_details(locator.first, selector)})
+        except Exception:
+            continue
+    return results
+
+
+def click_text_to_image_entry(page, candidates: list[dict]):
+    triggered = []
+    for candidate in candidates:
+        if candidate["upload_like"]:
+            continue
+        try:
+            clicked = False
+            try:
+                with page.expect_file_chooser(timeout=800):
+                    candidate["locator"].click()
+                    clicked = True
+                triggered.append(candidate)
+                print(f"  错误：该候选触发了文件选择器，不应作为文字配图入口。selector={candidate['selector']}; text={candidate['text'][:80]}")
+                continue
+            except PlaywrightTimeoutError as exc:
+                if clicked:
+                    print(f"  entry click: OK selector={candidate['selector']}")
+                    return True
+                raise exc
+        except Exception as exc:
+            print(f"  entry click failed selector={candidate['selector']}; error={str(exc).splitlines()[0][:120]}")
+    if triggered:
+        print("  文字配图入口识别失败：当前点击会打开本地文件选择器，已停止以避免误上传。")
+    return False
+
+
 def print_selector_result(page, name: str, selectors: dict, *, required: bool = True) -> bool:
     candidates = selector_list(selectors.get(name, []))
     index, candidate, locator = first_visible(page, candidates)
@@ -66,6 +153,7 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--open-page", action="store_true", help="Open XHS publish page and check selectors without filling.")
     parser.add_argument("--target", choices=sorted(TARGET_ALIASES), default="image-upload", help="Publish target URL to open when --open-page is used.")
+    parser.add_argument("--click-entry", action="store_true", help="Only for image-text-to-image: safely click the text-to-image entry and then check prompt input.")
     args = parser.parse_args()
     publish_kind = TARGET_ALIASES[args.target]
     selector_path = ROOT / "app/browser/selectors/xhs.yaml"
@@ -129,15 +217,24 @@ def main() -> int:
                     ok = print_selector_result(page, name, group, required=True) and ok
             else:
                 print("\n[image_text_to_image]")
-                ok = print_selector_result(page, "entry", group, required=True) and ok
-                entry_index, entry_selector, entry_locator = first_visible(page, selector_list(group.get("entry", [])))
-                if entry_locator:
-                    try:
-                        entry_locator.click()
-                        page.wait_for_timeout(1000)
-                    except Exception as exc:
-                        print(f"  entry click skipped: {str(exc).splitlines()[0][:120]}")
-                ok = print_selector_result(page, "prompt_input", group, required=True) and ok
+                candidates = text_to_image_candidates(page, selector_list(group.get("entry", [])))
+                if candidates:
+                    print("  entry candidates:")
+                    for index, candidate in enumerate(candidates, start=1):
+                        print(
+                            f"    {index}. selector={candidate['selector']}; tag={candidate['tag']}; "
+                            f"visible={candidate['visible']}; upload_like={candidate['upload_like']}; "
+                            f"box={candidate['box']}; text={candidate['text'][:120]}"
+                        )
+                else:
+                    print(f"  entry: NOT_FOUND; candidates={selector_list(group.get('entry', []))}")
+                    ok = False
+                if args.click_entry:
+                    ok = click_text_to_image_entry(page, candidates) and ok
+                    page.wait_for_timeout(1000)
+                    ok = print_selector_result(page, "prompt_input", group, required=True) and ok
+                else:
+                    print("  prompt_input: SKIPPED；加 --click-entry 后才点击入口并检查。")
 
             page.screenshot(path=str(screenshot_path), full_page=True)
             print(f"\nDiagnostic screenshot: {screenshot_path}")
