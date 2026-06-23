@@ -258,18 +258,18 @@ def regenerate_note(note_id: int, db: Session = Depends(get_db)):
 
 
 @app.post("/notes/{note_id}/dry-run")
-def dry_run(note_id: int, db: Session = Depends(get_db)):
+async def dry_run(note_id: int, db: Session = Depends(get_db)):
     try:
-        PublishService(db, settings, notifier()).fill(note_id, mode="dry_run")
+        await PublishService(db, settings, notifier()).fill_async(note_id, mode="dry_run")
         return redirect(f"/notes/{note_id}/final-review", "dry_run 预览已生成：未打开小红书，未上传素材，未点击发布。")
     except Exception as exc:
         return redirect_error(f"/notes/{note_id}", str(exc))
 
 
 @app.post("/notes/{note_id}/fill")
-def fill_note(note_id: int, mode: str = Form("fill_only"), db: Session = Depends(get_db)):
+async def fill_note(note_id: int, mode: str = Form("fill_only"), db: Session = Depends(get_db)):
     try:
-        PublishService(db, settings, notifier()).fill(note_id, mode=mode)
+        await PublishService(db, settings, notifier()).fill_async(note_id, mode=mode)
         return redirect(f"/notes/{note_id}/final-review", "发布页已填好，等待最终确认。")
     except Exception as exc:
         return redirect_error(f"/notes/{note_id}", str(exc))
@@ -295,9 +295,9 @@ def final_review_page(note_id: int, request: Request, db: Session = Depends(get_
 
 
 @app.post("/notes/{note_id}/final-confirm")
-def final_confirm_note(note_id: int, db: Session = Depends(get_db)):
+async def final_confirm_note(note_id: int, db: Session = Depends(get_db)):
     try:
-        PublishService(db, settings, notifier()).final_confirm(note_id)
+        await PublishService(db, settings, notifier()).final_confirm_async(note_id)
         return redirect(f"/notes/{note_id}/final-review", "已点击发布按钮；结果标记为 publish_uncertain，请人工核验。")
     except Exception as exc:
         return redirect_error(f"/notes/{note_id}/final-review", str(exc))
@@ -322,9 +322,9 @@ def return_to_edit(note_id: int, db: Session = Depends(get_db)):
 
 
 @app.post("/notes/{note_id}/retry-fill")
-def retry_fill(note_id: int, mode: str = Form("fill_only"), db: Session = Depends(get_db)):
+async def retry_fill(note_id: int, mode: str = Form("fill_only"), db: Session = Depends(get_db)):
     try:
-        PublishService(db, settings, notifier()).retry_fill(note_id, mode=mode)
+        await PublishService(db, settings, notifier()).retry_fill_async(note_id, mode=mode)
         return redirect(f"/notes/{note_id}/final-review", "已重新填表，仍等待最终确认。")
     except Exception as exc:
         return redirect_error(f"/notes/{note_id}/final-review", str(exc))

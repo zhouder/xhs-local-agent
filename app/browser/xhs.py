@@ -1,14 +1,16 @@
 from __future__ import annotations
 
+import asyncio
 import html
 import json
 from contextlib import suppress
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
 import yaml
 from PIL import Image, ImageDraw, ImageFont
-from playwright.sync_api import Error as PlaywrightError, TimeoutError as PlaywrightTimeoutError, sync_playwright
+from playwright.async_api import Error as PlaywrightError, TimeoutError as PlaywrightTimeoutError, async_playwright
 from sqlalchemy.orm import Session
 
 from app.config import ROOT, Settings
@@ -23,6 +25,13 @@ from app.services.state_machine import transition_note
 
 PUBLISH_MODES = {"dry_run", "fill_only", "publish_after_final_confirm"}
 PREVIEW_SIZE = (1080, 1440)
+VIDEO_SUFFIXES = {".mp4", ".mov", ".avi", ".mkv", ".webm"}
+
+
+@dataclass
+class SelectorHit:
+    locator: object
+    selector: str
 
 
 class XHSBrowser:
@@ -34,6 +43,11 @@ class XHSBrowser:
             self.selectors = yaml.safe_load(stream)["publish"]
 
     def fill_approved_note(self, note_id: int, *, dry_run: bool = True, mode: str | None = None) -> str:
+        if _event_loop_is_running():
+            raise RuntimeError("浏览器自动化运行方式错误，已修复为 async Playwright。如果仍出现此问题，请检查是否还有 sync_playwright 调用。")
+        return asyncio.run(self.fill_approved_note_async(note_id, dry_run=dry_run, mode=mode))
+
+    async def fill_approved_note_async(self, note_id: int, *, dry_run: bool = True, mode: str | None = None) -> str:
         if mode is None and not dry_run:
             self.audit.record("browser.real_publish", "blocked", target_type="note", target_id=note_id, output_summary="use_explicit_fill_mode_and_final_confirm")
             raise PermissionError("Real publish is disabled unless explicit safe publish mode and final confirm are used.")
@@ -42,6 +56,8 @@ class XHSBrowser:
             raise ValueError(f"Unsupported publish mode: {mode}")
         note = self._approved_note(note_id)
         assets = self.notes.media_paths(note.id)
+        if any(Path(path).suffix.casefold() in VIDEO_SUFFIXES for path in assets):
+            raise ValueError("视频发布暂未实现。")
         ok, reason = validate_image_assets(assets)
         if not ok:
             self.audit.record("browser.fill_publish", "blocked", target_type="note", target_id=note_id, error_message=reason, metadata={"mode": mode})
@@ -49,7 +65,7 @@ class XHSBrowser:
         if mode == "dry_run":
             screenshot, preview_html = self._dry_run_preview(note, assets)
         else:
-            screenshot, preview_html = self._run_browser_fill(note, assets, mode=mode, click_publish=False), ""
+            screenshot, preview_html = await self._run_browser_fill_async(note, assets, mode=mode, click_publish=False), ""
         transition_note(note, NoteStatus.PUBLISHING)
         transition_note(note, NoteStatus.WAITING_FINAL_CONFIRM)
         note.publish_mode = mode
@@ -62,6 +78,11 @@ class XHSBrowser:
         return screenshot
 
     def final_confirm_publish(self, note_id: int) -> str:
+        if _event_loop_is_running():
+            raise RuntimeError("浏览器自动化运行方式错误，已修复为 async Playwright。如果仍出现此问题，请检查是否还有 sync_playwright 调用。")
+        return asyncio.run(self.final_confirm_publish_async(note_id))
+
+    async def final_confirm_publish_async(self, note_id: int) -> str:
         note = self.notes.get(note_id)
         if not note:
             raise LookupError("Note not found")
@@ -75,11 +96,13 @@ class XHSBrowser:
             self.audit.record("browser.final_confirm", "blocked", target_type="note", target_id=note_id, output_summary="dry_run_preview")
             raise PermissionError("dry_run 是本地模拟预览，不能用于最终发布。请先使用 fill_only 或 publish_after_final_confirm。")
         assets = self.notes.media_paths(note.id)
+        if any(Path(path).suffix.casefold() in VIDEO_SUFFIXES for path in assets):
+            raise ValueError("视频发布暂未实现。")
         ok, reason = validate_image_assets(assets)
         if not ok:
             self.audit.record("browser.final_confirm", "blocked", target_type="note", target_id=note_id, error_message=reason)
             raise ValueError(reason)
-        screenshot = self._run_browser_fill(note, assets, mode=note.publish_mode or "publish_after_final_confirm", click_publish=True)
+        screenshot = await self._run_browser_fill_async(note, assets, mode=note.publish_mode or "publish_after_final_confirm", click_publish=True)
         transition_note(note, NoteStatus.PUBLISH_UNCERTAIN)
         note.publish_screenshot_path = screenshot
         note.publish_error_message = "Publish button clicked; please verify manually in XHS."
@@ -114,7 +137,7 @@ class XHSBrowser:
         self.audit.record("browser.dry_run_preview", "success", target_type="note", target_id=note.id, screenshot_path=str(png_path), metadata={"html_preview": str(html_path), "asset_count": len(assets)})
         return str(png_path), str(html_path)
 
-    def _run_browser_fill(self, note, assets: list[str], *, mode: str, click_publish: bool) -> str:
+    async def _run_browser_fill_async(self, note, assets: list[str], *, mode: str, click_publish: bool) -> str:
         screenshot = ""
         page = None
         browser = None
@@ -122,83 +145,96 @@ class XHSBrowser:
         playwright = None
         step = "launch"
         selector_name = ""
+        current_tab = ""
         keep_open = bool(self.settings.browser.get("keep_open_on_error", True))
         failed = False
         try:
-            playwright = sync_playwright().start()
+            playwright = await async_playwright().start()
             channel = self._browser_channel()
             if hasattr(playwright.chromium, "launch_persistent_context"):
                 profile_dir = ROOT / self.settings.browser.get("profile_dir", f"data/browser-profiles/{channel}")
                 profile_dir.mkdir(parents=True, exist_ok=True)
-                context = playwright.chromium.launch_persistent_context(
+                context = await playwright.chromium.launch_persistent_context(
                     str(profile_dir),
                     channel=channel,
                     headless=False,
                     slow_mo=self.settings.browser.get("slow_mo_ms", 300),
                 )
-                page = context.pages[0] if getattr(context, "pages", []) else context.new_page()
+                page = context.pages[0] if getattr(context, "pages", []) else await context.new_page()
             else:
-                browser = playwright.chromium.launch(
+                browser = await playwright.chromium.launch(
                     channel=channel,
                     headless=False,
                     slow_mo=self.settings.browser.get("slow_mo_ms", 300),
                 )
-                context = browser.new_context()
-                page = context.new_page()
+                context = await browser.new_context()
+                page = await context.new_page()
             step = "open_publish_page"
-            page.goto(self.settings.browser["publish_url"])
-            self._wait_for_login_and_editor(page)
-            step, selector_name = "wait_title", "title"
-            title = find_first_visible(page, self.selectors["title"], timeout=60_000)
+            await page.goto(self.settings.browser["publish_url"])
+            await self._wait_for_login_and_publish_page_async(page)
+            publish_content_type = "image" if assets else "long_text"
+            step, selector_name = "choose_publish_tab", "tab_upload_image" if assets else "tab_long_text"
+            current_tab = await async_choose_publish_tab(page, self.selectors, publish_content_type)
+            step, selector_name = "wait_editor", "title"
+            await async_wait_editor_ready(page, self.selectors, current_tab)
             step, selector_name = "fill_title", "title"
-            title.fill(note.title)
+            title = await async_find_first_visible(page, self.selectors["title"], timeout=60_000)
+            await title.locator.fill(note.title)
             hashtags = " ".join(f"#{tag}" for tag in json.loads(note.hashtags_json))
             step, selector_name = "fill_body", "body"
-            body = find_first_visible(page, self.selectors["body"], timeout=60_000)
-            body.fill(f"{note.body}\n{hashtags}".strip())
+            body = await async_find_first_visible(page, self.selectors["body"], timeout=60_000)
+            await body.locator.fill(f"{note.body}\n{hashtags}".strip())
             if self.selectors.get("topic_input"):
                 with suppress(Exception):
                     step, selector_name = "fill_topics", "topic_input"
-                    find_first_visible(page, self.selectors["topic_input"], timeout=5_000).fill(hashtags)
+                    topic = await async_find_first_visible(page, self.selectors["topic_input"], timeout=5_000)
+                    await topic.locator.fill(hashtags)
             if assets:
                 step, selector_name = "upload_assets", "file_input"
-                find_first_visible(page, self.selectors["file_input"], timeout=30_000).set_input_files(assets)
-            page.wait_for_timeout(1500)
-            screenshot = self._screenshot(page, note.id, "published-clicked" if click_publish else mode)
+                file_input = await async_find_first_visible(page, self.selectors["file_input"], timeout=30_000)
+                await file_input.locator.set_input_files(assets)
+            await page.wait_for_timeout(1500)
+            screenshot = await self._screenshot_async(page, note.id, "published-clicked" if click_publish else mode)
             if click_publish:
                 step, selector_name = "click_publish", "submit_button"
-                find_first_visible(page, self.selectors["submit_button"], timeout=30_000).click()
-                page.wait_for_timeout(3000)
-                screenshot = self._screenshot(page, note.id, "publish-uncertain")
+                submit = await async_find_first_visible(page, self.selectors["submit_button"], timeout=30_000)
+                await submit.locator.click()
+                await page.wait_for_timeout(3000)
+                screenshot = await self._screenshot_async(page, note.id, "publish-uncertain")
             return screenshot
         except PlaywrightClosedByUser as exc:
             failed = True
-            self._record_browser_failure(note, mode, click_publish, step, selector_name, str(exc), screenshot, page)
+            await self._record_browser_failure_async(note, mode, click_publish, step, selector_name, str(exc), screenshot, page, current_tab)
             raise RuntimeError("浏览器已被用户关闭，流程取消。") from None
         except PlaywrightTimeoutError:
             failed = True
-            candidates = self.selectors.get(selector_name or "title", [])
-            message = f"没有找到发布页编辑器。浏览器已保留，请检查页面结构或更新选择器。当前步骤：{step}；选择器候选：{selector_list(candidates)}"
-            self._record_browser_failure(note, mode, click_publish, step, selector_name or "title", message, screenshot, page)
+            if step == "wait_editor":
+                message = "已登录，但没有找到发布页编辑器。请运行选择器诊断脚本或检查小红书页面是否改版。"
+            elif current_tab == "upload_video":
+                message = "当前停留在上传视频页，图文笔记需要先切换到上传图文。"
+            else:
+                candidates = self.selectors.get(selector_name or "title", [])
+                message = f"没有找到发布页编辑器。当前步骤：{step}；选择器候选：{selector_list(candidates)}"
+            await self._record_browser_failure_async(note, mode, click_publish, step, selector_name or "title", message, screenshot, page, current_tab)
             raise RuntimeError(message) from None
         except Exception as exc:
             failed = True
             message = friendly_browser_error(exc)
-            self._record_browser_failure(note, mode, click_publish, step, selector_name, message, screenshot, page)
+            await self._record_browser_failure_async(note, mode, click_publish, step, selector_name, message, screenshot, page, current_tab)
             raise RuntimeError(message) from None
         finally:
             should_close = not failed or not keep_open
             if should_close and context is not None:
                 with suppress(Exception):
-                    context.close()
+                    await context.close()
             if should_close and browser is not None:
                 with suppress(Exception):
-                    browser.close()
+                    await browser.close()
             if should_close and playwright is not None:
                 with suppress(Exception):
-                    playwright.stop()
+                    await playwright.stop()
 
-    def _wait_for_login_and_editor(self, page) -> None:
+    async def _wait_for_login_and_publish_page_async(self, page) -> None:
         print("请在打开的 Chrome 中扫码登录小红书。本程序不会读取、导出或保存 cookie。")
         publish_url = self.settings.browser["publish_url"]
         deadline = datetime.now().timestamp() + 180
@@ -208,37 +244,40 @@ class XHSBrowser:
             current_url = getattr(page, "url", "") or ""
             if "/login" in current_url or "login?" in current_url:
                 with suppress(Exception):
-                    page.wait_for_timeout(2000)
+                    await page.wait_for_timeout(2000)
                 continue
             if not navigated_after_login and current_url and "publish" not in current_url:
                 with suppress(Exception):
-                    page.goto(publish_url)
+                    await page.goto(publish_url)
                     navigated_after_login = True
             try:
-                find_first_visible(page, self.selectors["title"], timeout=3_000)
+                await async_wait_publish_page_ready(page, self.selectors, timeout=5_000)
                 return
             except Exception as exc:
                 last_error = exc
-                if not current_url:
+                if not current_url or getattr(page, "fail", False):
                     break
                 if not navigated_after_login:
                     with suppress(Exception):
-                        page.goto(publish_url)
+                        await page.goto(publish_url)
                         navigated_after_login = True
                 with suppress(Exception):
-                    page.wait_for_timeout(2000)
-        raise PlaywrightTimeoutError(f"editor timeout: {last_error}")
+                    await page.wait_for_timeout(2000)
+        raise PlaywrightTimeoutError(f"publish page timeout: {last_error}")
 
-    def _record_browser_failure(self, note, mode: str, click_publish: bool, step: str, selector_name: str, message: str, screenshot: str, page) -> None:
+    async def _record_browser_failure_async(self, note, mode: str, click_publish: bool, step: str, selector_name: str, message: str, screenshot: str, page, current_tab: str = "") -> None:
         current_url = ""
         page_title = ""
         if page is not None:
             current_url = getattr(page, "url", "") or ""
             with suppress(Exception):
-                page_title = page.title() if hasattr(page, "title") else ""
+                page_title = await page.title() if hasattr(page, "title") else ""
+            if not current_tab:
+                with suppress(Exception):
+                    current_tab = await async_detect_active_publish_tab(page, self.selectors)
             if not screenshot:
                 with suppress(Exception):
-                    screenshot = self._screenshot(page, note.id, "failed")
+                    screenshot = await self._screenshot_async(page, note.id, "failed")
         if not screenshot:
             screenshot = self._unavailable_screenshot(note.id)
         self.db.rollback()
@@ -253,6 +292,7 @@ class XHSBrowser:
             metadata_json=json.dumps({
                 "current_url": current_url,
                 "page_title": page_title,
+                "current_tab": current_tab,
                 "selector_candidates": self.selectors.get(selector_name, []),
                 "keep_open_on_error": bool(self.settings.browser.get("keep_open_on_error", True)),
             }, ensure_ascii=False),
@@ -265,7 +305,7 @@ class XHSBrowser:
             target_id=note.id,
             error_message=message,
             screenshot_path=screenshot,
-            metadata={"mode": mode, "step": step, "selector_name": selector_name, "current_url": current_url, "page_title": page_title},
+            metadata={"mode": mode, "step": step, "selector_name": selector_name, "current_url": current_url, "page_title": page_title, "current_tab": current_tab},
         )
         current = self.notes.get(note.id)
         if current and current.status == NoteStatus.PUBLISHING:
@@ -293,11 +333,11 @@ class XHSBrowser:
         except Exception as exc:
             self.audit.record("notification.browser_result", "failed", target_type="note", target_id=note_id, error_message=str(exc))
 
-    def _screenshot(self, page, note_id: int, suffix: str) -> str:
+    async def _screenshot_async(self, page, note_id: int, suffix: str) -> str:
         directory = ROOT / self.settings.browser["screenshots_dir"]
         directory.mkdir(parents=True, exist_ok=True)
         path = directory / f"note-{note_id}-{datetime.now():%Y%m%d-%H%M%S}-{suffix}.png"
-        page.screenshot(path=str(path), full_page=True)
+        await page.screenshot(path=str(path), full_page=True)
         return str(path)
 
     def _unavailable_screenshot(self, note_id: int) -> str:
@@ -316,13 +356,21 @@ class PlaywrightClosedByUser(RuntimeError):
     pass
 
 
+def _event_loop_is_running() -> bool:
+    try:
+        asyncio.get_running_loop()
+        return True
+    except RuntimeError:
+        return False
+
+
 def selector_list(selector_candidates) -> list[str]:
     if isinstance(selector_candidates, str):
         return [selector_candidates]
     return [str(item) for item in selector_candidates or []]
 
 
-def find_first_visible(page, selector_candidates, timeout: int = 30_000):
+async def async_find_first_visible(page, selector_candidates, timeout: int = 30_000) -> SelectorHit:
     candidates = selector_list(selector_candidates)
     last_error: Exception | None = None
     per_selector = max(500, int(timeout / max(len(candidates), 1)))
@@ -333,8 +381,8 @@ def find_first_visible(page, selector_candidates, timeout: int = 30_000):
                 if hasattr(locator, "first"):
                     locator = locator.first
             if hasattr(locator, "wait_for"):
-                locator.wait_for(state="visible", timeout=per_selector)
-            return locator
+                await locator.wait_for(state="visible", timeout=per_selector)
+            return SelectorHit(locator=locator, selector=selector)
         except PlaywrightError as exc:
             if "Target page, context or browser has been closed" in str(exc):
                 raise PlaywrightClosedByUser() from None
@@ -346,14 +394,65 @@ def find_first_visible(page, selector_candidates, timeout: int = 30_000):
     raise PlaywrightTimeoutError(f"No visible selector found from candidates: {candidates}") from last_error
 
 
+async def async_wait_publish_page_ready(page, selectors: dict, timeout: int = 30_000) -> SelectorHit:
+    return await async_find_first_visible(page, selectors.get("page_ready", []), timeout=timeout)
+
+
+async def async_detect_active_publish_tab(page, selectors: dict) -> str:
+    checks = [
+        ("upload_image", selectors.get("active_tab_upload_image", [])),
+        ("long_text", selectors.get("active_tab_long_text", [])),
+        ("upload_video", selectors.get("active_tab_upload_video", selectors.get("tab_upload_video", []))),
+    ]
+    for name, candidates in checks:
+        for selector in selector_list(candidates):
+            with suppress(Exception):
+                if await page.locator(selector).count() > 0:
+                    return name
+    return "unknown"
+
+
+async def async_choose_publish_tab(page, selectors: dict, publish_content_type: str) -> str:
+    current = await async_detect_active_publish_tab(page, selectors)
+    if publish_content_type == "image":
+        if current == "upload_image":
+            return current
+        hit = await async_find_first_visible(page, selectors.get("tab_upload_image", []), timeout=30_000)
+        await hit.locator.click()
+        with suppress(Exception):
+            await async_find_first_visible(page, selectors.get("active_tab_upload_image", []), timeout=5_000)
+        return "upload_image"
+    if current == "long_text":
+        return current
+    try:
+        hit = await async_find_first_visible(page, selectors.get("tab_long_text", []), timeout=15_000)
+        await hit.locator.click()
+        with suppress(Exception):
+            await async_find_first_visible(page, selectors.get("active_tab_long_text", []), timeout=5_000)
+        return "long_text"
+    except Exception:
+        hit = await async_find_first_visible(page, selectors.get("tab_upload_image", []), timeout=15_000)
+        await hit.locator.click()
+        return "upload_image"
+
+
+async def async_wait_editor_ready(page, selectors: dict, publish_content_type: str) -> None:
+    await async_find_first_visible(page, selectors.get("title", []), timeout=60_000)
+    await async_find_first_visible(page, selectors.get("body", []), timeout=60_000)
+    if publish_content_type == "upload_image":
+        await async_find_first_visible(page, selectors.get("file_input", []), timeout=30_000)
+
+
 def friendly_browser_error(exc: Exception) -> str:
     text = str(exc)
+    if "Playwright Sync API inside the asyncio loop" in text or "sync_playwright" in text:
+        return "浏览器自动化运行方式错误，已修复为 async Playwright。如果仍出现此问题，请检查是否还有 sync_playwright 调用。"
     if "Target page, context or browser has been closed" in text:
         return "浏览器已被用户关闭，流程取消。"
     if "Executable doesn't exist" in text or ("channel" in text and "chrome" in text.casefold()):
         return "Chrome 启动失败，请确认已安装 Chrome，或在设置里切换为 Edge / Chromium。"
     if "No visible selector" in text or "Timeout" in text:
-        return "没有找到小红书发布页编辑器，请先手动登录，或更新选择器配置。"
+        return "已登录，但没有找到发布页编辑器。请运行选择器诊断脚本或检查小红书页面是否改版。"
     return text.splitlines()[0][:300] or "浏览器流程失败。"
 
 

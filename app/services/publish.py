@@ -20,8 +20,14 @@ class PublishService:
     def fill(self, note_id: int, mode: str = "dry_run") -> str:
         return XHSBrowser(self.db, self.settings, self.notifier).fill_approved_note(note_id, dry_run=(mode == "dry_run"), mode=mode)
 
+    async def fill_async(self, note_id: int, mode: str = "dry_run") -> str:
+        return await XHSBrowser(self.db, self.settings, self.notifier).fill_approved_note_async(note_id, dry_run=(mode == "dry_run"), mode=mode)
+
     def final_confirm(self, note_id: int) -> str:
         return XHSBrowser(self.db, self.settings, self.notifier).final_confirm_publish(note_id)
+
+    async def final_confirm_async(self, note_id: int) -> str:
+        return await XHSBrowser(self.db, self.settings, self.notifier).final_confirm_publish_async(note_id)
 
     def cancel(self, note_id: int):
         note = self._waiting_note(note_id)
@@ -45,6 +51,13 @@ class PublishService:
         self.db.commit()
         self.audit.record("publish.retry_fill", "success", target_type="note", target_id=note.id, metadata={"mode": mode})
         return self.fill(note_id, mode)
+
+    async def retry_fill_async(self, note_id: int, mode: str = "fill_only") -> str:
+        note = self._waiting_note(note_id)
+        note.status = NoteStatus.APPROVED
+        self.db.commit()
+        self.audit.record("publish.retry_fill", "success", target_type="note", target_id=note.id, metadata={"mode": mode})
+        return await self.fill_async(note_id, mode)
 
     def _waiting_note(self, note_id: int):
         note = self.notes.get(note_id)

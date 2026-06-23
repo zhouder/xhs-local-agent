@@ -15,7 +15,16 @@ sys.path.insert(0, str(ROOT_DIR))
 from app.config import ROOT, get_settings
 
 
-REQUIRED = {"title", "body", "file_input", "submit_button"}
+REQUIRED = {
+    "page_ready",
+    "tab_upload_video",
+    "tab_upload_image",
+    "tab_long_text",
+    "title",
+    "body",
+    "file_input",
+    "submit_button",
+}
 
 
 def selector_list(value) -> list[str]:
@@ -33,6 +42,25 @@ def describe_locator(locator) -> str:
         return f"tag={tag}; placeholder={placeholder[:80]}; text={text}"
     except Exception as exc:
         return f"summary_error={str(exc).splitlines()[0][:120]}"
+
+
+def first_visible(page, candidates: list[str]):
+    for index, candidate in enumerate(candidates, start=1):
+        locator = page.locator(candidate)
+        count = locator.count()
+        if count:
+            return index, candidate, locator.first
+    return None, "", None
+
+
+def print_selector_result(page, name: str, selectors: dict) -> bool:
+    candidates = selector_list(selectors.get(name, []))
+    index, candidate, locator = first_visible(page, candidates)
+    if locator:
+        print(f"  {name}: FOUND candidate={index}; selector={candidate}; {describe_locator(locator)}")
+        return True
+    print(f"  {name}: NOT_FOUND; candidates={candidates}")
+    return False
 
 
 def main() -> int:
@@ -73,21 +101,30 @@ def main() -> int:
         else:
             page.goto(settings.browser["publish_url"])
         ok = True
-        for name, selector in selectors.items():
-            candidates = selector_list(selector)
-            found = False
-            print(f"\n[{name}]")
-            for index, candidate in enumerate(candidates, start=1):
-                locator = page.locator(candidate)
-                count = locator.count()
-                if count:
-                    found = True
-                    print(f"  {index}. FOUND count={count}; selector={candidate}; {describe_locator(locator)}")
-                    break
-                print(f"  {index}. miss; selector={candidate}")
-            if not found:
-                ok = False
-                print(f"  result=NOT_FOUND; candidates={candidates}")
+        print("\n[page tabs]")
+        for name in ["page_ready", "tab_upload_video", "tab_upload_image", "tab_long_text"]:
+            ok = print_selector_result(page, name, selectors) and ok
+
+        print("\n[upload image tab]")
+        _, _, upload_image = first_visible(page, selector_list(selectors.get("tab_upload_image", [])))
+        if upload_image:
+            upload_image.click()
+            page.wait_for_timeout(1200)
+            for name in ["title", "body", "file_input", "topic_input"]:
+                ok = print_selector_result(page, name, selectors) and ok
+        else:
+            ok = False
+            print("  cannot click upload image tab")
+
+        print("\n[long text tab]")
+        _, _, long_text = first_visible(page, selector_list(selectors.get("tab_long_text", [])))
+        if long_text:
+            long_text.click()
+            page.wait_for_timeout(1200)
+            for name in ["title", "body"]:
+                ok = print_selector_result(page, name, selectors) and ok
+        else:
+            print("  long text tab not found; upload image fallback may still work")
         page.screenshot(path=str(screenshot_path), full_page=True)
         print(f"\nDiagnostic screenshot: {screenshot_path}")
         if not settings.browser.get("keep_open_on_error", True):

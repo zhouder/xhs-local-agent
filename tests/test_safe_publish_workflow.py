@@ -25,17 +25,51 @@ from app.services.hashtags import ensure_hashtags
 
 
 class RecordingLocator:
-    def __init__(self, page):
+    def __init__(self, page, selector=""):
         self.page = page
+        self.selector = selector
 
-    def fill(self, value):
+    @property
+    def first(self):
+        return self
+
+    async def wait_for(self, state="visible", timeout=0):
+        return None
+
+    async def count(self):
+        if "active" in self.selector or "aria-selected" in self.selector:
+            if "上传图文" in self.selector and self.page.current_tab == "upload_image":
+                return 1
+            if "写长文" in self.selector and self.page.current_tab == "long_text":
+                return 1
+            if "上传视频" in self.selector and self.page.current_tab == "upload_video":
+                return 1
+            return 0
+        return 1
+
+    async def fill(self, value):
         self.page.filled.append(value)
 
-    def set_input_files(self, paths):
+    async def set_input_files(self, paths):
         self.page.files = list(paths)
 
-    def click(self):
-        self.page.clicked = True
+    async def click(self):
+        self.page.clicked_selectors.append(self.selector)
+        if "上传图文" in self.selector:
+            self.page.current_tab = "upload_image"
+        elif "写长文" in self.selector:
+            self.page.current_tab = "long_text"
+        elif "发布" in self.selector:
+            self.page.clicked = True
+
+    async def evaluate(self, script):
+        return "button"
+
+    async def get_attribute(self, name):
+        return ""
+
+    async def inner_text(self, timeout=1000):
+        return self.selector
 
 
 class RecordingPage:
@@ -43,31 +77,32 @@ class RecordingPage:
         self.clicked = False
         self.filled = []
         self.files = []
+        self.url = ""
+        self.current_tab = "upload_video"
+        self.clicked_selectors = []
 
-    def goto(self, url):
+    async def goto(self, url):
         self.url = url
 
-    def wait_for_selector(self, selector, timeout):
-        return None
-
     def locator(self, selector):
-        return RecordingLocator(self)
+        return RecordingLocator(self, selector)
 
-    def wait_for_timeout(self, milliseconds):
+    async def wait_for_timeout(self, milliseconds):
         return None
 
-    def screenshot(self, path, full_page):
+    async def screenshot(self, path, full_page):
         Path(path).write_bytes(b"fake-png")
 
 
 class FakeContext:
     def __init__(self, page):
         self.page = page
+        self.pages = [page]
 
-    def new_page(self):
+    async def new_page(self):
         return self.page
 
-    def close(self):
+    async def close(self):
         return None
 
 
@@ -75,10 +110,10 @@ class FakeBrowser:
     def __init__(self, page):
         self.page = page
 
-    def new_context(self):
+    async def new_context(self):
         return FakeContext(self.page)
 
-    def close(self):
+    async def close(self):
         return None
 
 
@@ -86,18 +121,21 @@ class FakeChromium:
     def __init__(self, pages):
         self.pages = pages
 
-    def launch(self, **kwargs):
+    async def launch(self, **kwargs):
         return FakeBrowser(self.pages.pop(0))
+
+    async def launch_persistent_context(self, *args, **kwargs):
+        return FakeContext(self.pages.pop(0))
 
 
 class FakePlaywright:
     def __init__(self, pages):
         self.chromium = FakeChromium(pages)
 
-    def start(self):
+    async def start(self):
         return self
 
-    def stop(self):
+    async def stop(self):
         return None
 
 
@@ -135,10 +173,13 @@ def test_fill_only_fills_without_click_and_final_confirm_clicks(db, settings, tm
     settings.browser["screenshots_dir"] = str(tmp_path)
     fill_page, final_page = RecordingPage(), RecordingPage()
     pages = [fill_page, final_page]
-    monkeypatch.setattr(xhs_module, "sync_playwright", lambda: FakePlaywright(pages))
+    monkeypatch.setattr(xhs_module, "async_playwright", lambda: FakePlaywright(pages))
 
     PublishService(db, settings, NullNotifier()).fill(note.id, mode="fill_only")
     assert not fill_page.clicked
+    assert any("上传图文" in selector for selector in fill_page.clicked_selectors)
+    title_index = next(index for index, selector in enumerate(fill_page.clicked_selectors + ["title"]) if "上传图文" in selector)
+    assert title_index == 0
     assert note.status == NoteStatus.WAITING_FINAL_CONFIRM
     assert note.publish_screenshot_path
 
@@ -154,7 +195,7 @@ def test_dry_run_does_not_start_playwright_or_visit_xhs(db, settings, tmp_path, 
     def fail_if_called():
         raise AssertionError("dry_run must not start Playwright")
 
-    monkeypatch.setattr(xhs_module, "sync_playwright", fail_if_called)
+    monkeypatch.setattr(xhs_module, "async_playwright", fail_if_called)
     PublishService(db, settings, NullNotifier()).fill(note.id, mode="dry_run")
     assert note.status == NoteStatus.WAITING_FINAL_CONFIRM
     assert note.publish_mode == "dry_run"
@@ -164,6 +205,16 @@ def test_dry_run_does_not_start_playwright_or_visit_xhs(db, settings, tmp_path, 
     assert Path(note.publish_preview_html_path).exists()
     with Image.open(note.publish_screenshot_path) as image:
         assert image.size == (1080, 1440)
+
+
+def test_fill_only_without_assets_chooses_long_text_tab(db, settings, tmp_path, monkeypatch):
+    note = approved_note(db)
+    settings.browser["screenshots_dir"] = str(tmp_path)
+    page = RecordingPage()
+    monkeypatch.setattr(xhs_module, "async_playwright", lambda: FakePlaywright([page]))
+    PublishService(db, settings, NullNotifier()).fill(note.id, mode="fill_only")
+    assert any("写长文" in selector for selector in page.clicked_selectors)
+    assert not any("上传图文" in selector for selector in page.clicked_selectors)
 
 
 def test_invalid_and_unsupported_assets_block_publish(db, tmp_path):

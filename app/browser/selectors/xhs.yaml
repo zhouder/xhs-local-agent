@@ -1,21 +1,60 @@
 publish:
   # Keep all XHS selectors centralized. Each key supports ordered fallback candidates.
+  page_ready:
+    - 'text=上传视频'
+    - 'text=上传图文'
+    - 'text=写长文'
+    - '[role="tab"]:has-text("上传视频")'
+    - '[role="tab"]:has-text("上传图文")'
+    - '[role="tab"]:has-text("写长文")'
+
+  tab_upload_video:
+    - 'text=上传视频'
+    - 'button:has-text("上传视频")'
+    - '[role="tab"]:has-text("上传视频")'
+
+  tab_upload_image:
+    - 'text=上传图文'
+    - 'button:has-text("上传图文")'
+    - '[role="tab"]:has-text("上传图文")'
+
+  tab_long_text:
+    - 'text=写长文'
+    - 'button:has-text("写长文")'
+    - '[role="tab"]:has-text("写长文")'
+
+  active_tab_upload_video:
+    - '[class*="active"]:has-text("上传视频")'
+    - '[aria-selected="true"]:has-text("上传视频")'
+
+  active_tab_upload_image:
+    - '[class*="active"]:has-text("上传图文")'
+    - '[aria-selected="true"]:has-text("上传图文")'
+
+  active_tab_long_text:
+    - '[class*="active"]:has-text("写长文")'
+    - '[aria-selected="true"]:has-text("写长文")'
+
   title:
     - 'input[placeholder*="标题"]'
     - 'textarea[placeholder*="标题"]'
     - '[contenteditable="true"][data-placeholder*="标题"]'
     - 'input[placeholder*="填写标题"]'
+
   body:
     - '[contenteditable="true"][data-placeholder*="正文"]'
     - 'textarea[placeholder*="正文"]'
     - '[data-placeholder*="正文"]'
     - '[contenteditable="true"]'
+
   file_input:
     - 'input[type="file"]'
+
   topic_input:
     - 'input[placeholder*="话题"]'
     - 'input[placeholder*="#"]'
     - 'textarea[placeholder*="话题"]'
+
   submit_button:
     - 'button:has-text("发布")'
     - 'button:has-text("立即发布")'
