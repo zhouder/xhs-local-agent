@@ -36,6 +36,7 @@ from app.services.review import ReviewService
 from app.services.scheduler import PublishScheduler
 from app.security import generate_api_key_env, write_api_key
 from app.services.provider_registry import ProviderInput, ProviderRegistry, provider_requires_api_key, provider_view
+from app.routes.media import router as media_router
 
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
@@ -51,6 +52,7 @@ async def lifespan(_: FastAPI):
 
 app = FastAPI(title="XHS Local Growth Agent", lifespan=lifespan)
 app.mount("/static", StaticFiles(directory=ROOT / "app/static"), name="static")
+app.include_router(media_router)
 
 
 @app.get("/screenshots/{filename}")
@@ -62,13 +64,13 @@ def screenshot_file(filename: str):
     return FileResponse(path)
 
 
-@app.get("/media/{note_dir}/{filename}")
-def media_file(note_dir: str, filename: str):
-    directory = (ROOT / "data" / "media").resolve()
-    path = (directory / note_dir / filename).resolve()
-    if directory not in path.parents or not path.exists():
+@app.get("/previews/{filename}")
+def preview_file(filename: str):
+    directory = (ROOT / settings.browser["screenshots_dir"]).resolve()
+    path = (directory / filename).resolve()
+    if directory not in path.parents or not path.exists() or path.suffix.casefold() != ".html":
         raise HTTPException(404)
-    return FileResponse(path)
+    return FileResponse(path, media_type="text/html; charset=utf-8")
 
 
 @app.middleware("http")
@@ -259,7 +261,7 @@ def regenerate_note(note_id: int, db: Session = Depends(get_db)):
 def dry_run(note_id: int, db: Session = Depends(get_db)):
     try:
         PublishService(db, settings, notifier()).fill(note_id, mode="dry_run")
-        return redirect(f"/notes/{note_id}/final-review", "Dry-run 已结束，未点击发布；请查看截图。")
+        return redirect(f"/notes/{note_id}/final-review", "dry_run 预览已生成：未打开小红书，未上传素材，未点击发布。")
     except Exception as exc:
         return redirect_error(f"/notes/{note_id}", str(exc))
 
@@ -286,6 +288,7 @@ def final_review_page(note_id: int, request: Request, db: Session = Depends(get_
         "media_paths": repo.media_paths(note_id),
         "errors": errors,
         "screenshot_filename": os.path.basename(note.publish_screenshot_path) if note.publish_screenshot_path else "",
+        "preview_filename": os.path.basename(note.publish_preview_html_path) if note.publish_preview_html_path else "",
         "message": request.query_params.get("message", ""),
         "error": request.query_params.get("error", ""),
     })
@@ -325,43 +328,6 @@ def retry_fill(note_id: int, mode: str = Form("fill_only"), db: Session = Depend
         return redirect(f"/notes/{note_id}/final-review", "已重新填表，仍等待最终确认。")
     except Exception as exc:
         return redirect_error(f"/notes/{note_id}/final-review", str(exc))
-
-
-@app.post("/notes/{note_id}/media/upload")
-def upload_media(note_id: int, files: list[UploadFile] = File(...), db: Session = Depends(get_db)):
-    try:
-        MaterialService(db).upload_files(note_id, files)
-        return redirect(f"/notes/{note_id}", "图片已添加。")
-    except Exception as exc:
-        return redirect_error(f"/notes/{note_id}", str(exc))
-
-
-@app.post("/notes/{note_id}/media/reorder")
-def reorder_media(note_id: int, ordered_ids: str = Form(...), db: Session = Depends(get_db)):
-    try:
-        ids = [int(item) for item in ordered_ids.replace(",", " ").split() if item.strip()]
-        MaterialService(db).reorder(note_id, ids)
-        return redirect(f"/notes/{note_id}", "图片顺序已更新。")
-    except Exception as exc:
-        return redirect_error(f"/notes/{note_id}", str(exc))
-
-
-@app.post("/notes/{note_id}/media/{asset_id}/delete")
-def delete_media(note_id: int, asset_id: int, db: Session = Depends(get_db)):
-    try:
-        MaterialService(db).delete(note_id, asset_id)
-        return redirect(f"/notes/{note_id}", "图片已删除。")
-    except Exception as exc:
-        return redirect_error(f"/notes/{note_id}", str(exc))
-
-
-@app.post("/notes/{note_id}/media/generate-cover")
-def generate_cover(note_id: int, db: Session = Depends(get_db)):
-    try:
-        MaterialService(db).generate_cover(note_id)
-        return redirect(f"/notes/{note_id}", "已生成本地 AI 封面占位图。")
-    except Exception as exc:
-        return redirect_error(f"/notes/{note_id}", str(exc))
 
 
 @app.post("/agent/{action}")

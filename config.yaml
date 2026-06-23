@@ -14,6 +14,7 @@ browser:
   slow_mo_ms: 300
   screenshots_dir: "data/screenshots"
   dry_run: true
+  keep_open_on_error: true
   publish_url: "https://creator.xiaohongshu.com/publish/publish"
 
 ai:

@@ -84,6 +84,7 @@ class Note(TimestampMixin, Base):
     status: Mapped[str] = mapped_column(String(30), default=NoteStatus.DRAFT)
     publish_mode: Mapped[str] = mapped_column(String(40), default="dry_run")
     publish_screenshot_path: Mapped[str] = mapped_column(String(1000), default="")
+    publish_preview_html_path: Mapped[str] = mapped_column(String(1000), default="")
     publish_error_message: Mapped[str] = mapped_column(Text, default="")
     content_plan_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
     approved_at: Mapped[object | None] = mapped_column(DateTime, nullable=True)

@@ -14,7 +14,7 @@
 8. **草稿状态机：通过（已加固）。** 七种状态均定义于集中转换表；非法转换抛错；ORM 拒绝未知状态；编辑或重新生成已审核内容会失效审核并回到 draft。
 9. **发布流程：通过。** pending/rejected/draft 均不能进入浏览器发布；只有 approved 通过 PolicyEngine；dry-run 无任何 `click` 调用；`dry_run=False` 始终阻断并审计。
 10. **选择器集中管理：通过。** Playwright 的 locator/wait selector 参数全部来自 `app/browser/selectors/xhs.yaml`；AST 测试持续校验。
-11. **cookie 边界：通过。** 不存在 `cookies()`、`add_cookies()`、`storage_state`、`user_data_dir`；使用临时 `browser.new_context()`。
+11. **cookie 边界：通过。** 不存在 `cookies()`、`add_cookies()`、`storage_state`；真实填表使用浏览器 persistent profile 复用浏览器自身登录态，但代码不读取、导出、打印或保存 cookie。
 12. **真实互动：通过。** 不存在自动评论、私信、点赞执行代码；对应页面和表仅为后续阶段占位；浏览器模块没有 click 调用。
 13. **审计日志：通过（已加固）。** AI 成功/失败、草稿变更、审核决策、暂停/恢复、通知、策略阻断、浏览器成功/失败及真实发布阻断均写入 audit log。
 14. **失败截图和 browser_errors：通过（已修复）。** 页面存在时在关闭前截图；页面尚未创建时生成 `page-unavailable.png` 失败工件；两种情况都写 browser_errors 和 audit。

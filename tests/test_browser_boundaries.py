@@ -54,22 +54,26 @@ class FakePage:
 class FakeContext:
     def __init__(self, page):
         self.page = page
+        self.closed = False
 
     def new_page(self):
         return self.page
 
     def close(self):
+        self.closed = True
         return None
 
 
 class FakeBrowser:
     def __init__(self, page):
         self.page = page
+        self.closed = False
 
     def new_context(self):
         return FakeContext(self.page)
 
     def close(self):
+        self.closed = True
         return None
 
 
@@ -84,11 +88,13 @@ class FakeChromium:
 class FakePlaywright:
     def __init__(self, page):
         self.chromium = FakeChromium(page)
+        self.stopped = False
 
     def start(self):
         return self
 
     def stop(self):
+        self.stopped = True
         return None
 
 
@@ -127,6 +133,18 @@ def test_fill_only_browser_failure_saves_screenshot_error_and_audit(db, settings
     assert error and audit
     assert error.screenshot_path == audit.screenshot_path
     assert Path(error.screenshot_path).exists()
+    assert "selector_candidates" in error.metadata_json
+
+
+def test_keep_open_on_error_leaves_browser_for_debugging(db, settings, tmp_path, monkeypatch):
+    note = approved_note(db)
+    settings.browser["screenshots_dir"] = str(tmp_path)
+    settings.browser["keep_open_on_error"] = True
+    fake = FakePlaywright(FakePage(fail=True))
+    monkeypatch.setattr(xhs_module, "sync_playwright", lambda: fake)
+    with pytest.raises(RuntimeError):
+        XHSBrowser(db, settings, NullNotifier()).fill_approved_note(note.id, dry_run=False, mode="fill_only")
+    assert fake.stopped is False
 
 
 def test_real_publish_is_blocked_and_audited(db, settings):

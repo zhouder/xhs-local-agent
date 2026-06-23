@@ -45,6 +45,7 @@ def init_db() -> None:
             "growth_oriented": "BOOLEAN NOT NULL DEFAULT 1",
             "publish_mode": "VARCHAR(40) NOT NULL DEFAULT 'dry_run'",
             "publish_screenshot_path": "VARCHAR(1000) NOT NULL DEFAULT ''",
+            "publish_preview_html_path": "VARCHAR(1000) NOT NULL DEFAULT ''",
             "publish_error_message": "TEXT NOT NULL DEFAULT ''",
             "content_plan_id": "INTEGER",
         }

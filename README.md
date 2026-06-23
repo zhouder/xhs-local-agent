@@ -1,13 +1,13 @@
 # XHS Local Agent
 
-Windows 本地小红书内容生产与安全发布 agent。当前支持 AI Provider、内容计划、批量生成草稿、人工审核、图片素材管理、Playwright 安全填表、最终确认、命令 MVP、审计日志和验收脚本。
+Windows 本地运行的小红书内容生产与安全发布 agent。当前版本支持 AI Provider、内容计划、批量生成草稿、人工审核、图片素材管理、本地 dry_run 预览、Playwright 安全填表、最终确认、审计日志和验收脚本。
 
-安全边界不变：不自动评论、不自动私信、不自动点赞、不做兴趣浏览；不绕过验证码、风控或反检测；不读取、导出、打印或提交 cookie；真实发布必须经过审核和最终确认。
+安全边界不变：不自动评论、不自动私信、不自动点赞、不做兴趣浏览；不绕过验证码、风控或反检测；不读取、导出、打印或保存 cookie；真实发布必须经过人工审核和最终确认。
 
 ## 启动
 
 ```powershell
-cd D:\codex\workspace\xhs-growth-agent
+cd D:\codex\workspace\xhs-local-agent
 .\run.ps1 -Check
 .\run.ps1
 ```
@@ -16,7 +16,7 @@ cd D:\codex\workspace\xhs-growth-agent
 
 ## AI Provider
 
-在“设置”里配置默认 AI Provider。API Key 只写入本地 `.env`，不会明文显示在页面、SQLite 或审计日志。
+在“设置”里选择默认 AI Provider。API Key 只写入本地 `.env`，不会明文展示在页面、SQLite 或审计日志里。
 
 OpenModel 推荐配置：
 
@@ -27,66 +27,62 @@ OpenModel 推荐配置：
 
 ## 发布模式
 
-- `dry_run`: 纯本地模拟，不打开小红书，不打开 Edge/Chrome/Chromium，不访问 `creator.xiaohongshu.com`，不上传素材，不点击发布。它只做状态、内容、话题和素材校验，并生成本地模拟预览。
-- `fill_only`: 才会打开小红书发布页。用户手动登录后，系统填写标题、正文、话题和图片，截图后停在 `waiting_final_confirm`，不点击发布。
-- `publish_after_final_confirm`: 先按 `fill_only` 填表截图；只有用户在最终确认页点击“最终确认并发布”后才点击发布按钮。无法确认成功时标记为 `publish_uncertain`。
+- `dry_run`: 纯本地模拟，不打开小红书，不打开浏览器，不访问 `creator.xiaohongshu.com`，不上传素材，不点击发布。它会校验状态、内容、话题和素材，并生成本地 HTML 预览和 1080x1440 PNG 预览图。
+- `fill_only`: 打开小红书发布页。用户手动登录后，系统会重新进入发布页，等待编辑器出现，再填写标题、正文、话题和图片，截图后停在 `waiting_final_confirm`，不点击发布。
+- `publish_after_final_confirm`: 先按 `fill_only` 填表截图。只有用户在最终确认页点击“最终确认并发布”后，才允许点击发布按钮。无法确认成功时标记为 `publish_uncertain`。
 
-默认浏览器是 Chrome。可以在“设置 -> 浏览器选择”切换 Chrome / Edge / Chromium。Chrome 不可用时会显示中文错误，请手动切换，不会静默弹 Edge。
+默认浏览器是 Chrome。可以在“设置 -> 浏览器选择”切换 Chrome / Edge / Chromium。调试阶段默认 `browser.keep_open_on_error: true`，选择器失败或登录超时时浏览器会保留，便于人工检查。
 
 ## 登录流程
 
-`fill_only` 或最终确认发布会使用专用浏览器 profile：`data/browser-profiles/chrome`。用户手动登录一次后，后续尽量复用浏览器自身登录态。代码不会调用 `cookies()` 或 `storage_state()`，也不会导出 cookie。
+`fill_only` 和最终确认发布使用专用浏览器 profile：`data/browser-profiles/chrome`。用户手动登录一次后，后续尽量复用浏览器自身登录态。代码不会调用 cookie 读取或导出 API。
 
-如果打开的是登录页，请在浏览器里手动登录。登录后系统会继续等待发布编辑器并填表。若用户关闭浏览器、选择器失效或超时，页面会返回中文错误，并写入 `audit_logs` 和 `browser_errors`。
+如果打开的是登录页，请在浏览器里扫码登录。登录后系统会再次跳转到发布页，并等待发布页编辑器。如果 180 秒内找不到编辑器，页面会显示中文错误，`browser_errors` 会记录当前 URL、页面标题、步骤、选择器候选和截图。
+
+## 图片素材
+
+草稿详情页的“图片素材”区支持：
+
+- 点击“添加图片”后自动上传并刷新页面
+- 一次选择多张图片
+- 最多 9 张
+- 缩略图网格预览
+- 拖拽排序后保存顺序
+- 删除图片后自动重排
+- 生成 1080x1440 本地 AI 封面图
+
+支持 `png/jpg/jpeg/webp`。上传文件复制到 `data/media/note-{id}/`，不提交 GitHub。AI 封面由 Pillow 本地生成，使用系统字体和几何背景，不下载外部版权图片。
+
+## 最终确认页
+
+dry_run 后会直接在最终确认页内嵌显示清晰 HTML 预览卡片，并附带 1080x1440 PNG 预览图。dry_run 状态下“最终确认并发布”按钮保持禁用。
+
+fill_only 后最终确认页显示真实页面截图。只有状态为 `waiting_final_confirm` 且不是 dry_run，才允许最终确认发布。
+
+## 选择器诊断
+
+基础检查：
+
+```powershell
+.\.venv\Scripts\python.exe scripts\check_xhs_selectors.py
+```
+
+打开浏览器诊断：
+
+```powershell
+.\.venv\Scripts\python.exe scripts\check_xhs_selectors.py --open-page
+```
+
+`--open-page` 会使用同一个 Chrome profile 打开发布页，输出每个 selector key 的候选、命中情况、命中序号、元素 tag、placeholder 和文本摘要，并保存诊断截图。它不会填写内容、不会发布、不会读取 cookie。
 
 ## 内容计划与批量生成
 
 入口：顶部导航“内容计划”。
 
-1. 在“新建内容计划”里填写计划名称、目标人群、内容风格、目标、主题列表、每天生成数量、发布时间段。
-2. 创建后进入计划详情页。
-3. 点击明显按钮：
-   - `批量生成草稿`
-   - `只生成未生成主题`
-   - `重新生成失败主题`
-4. 页面会显示总主题、成功/失败、每个主题的 `note_id` 和“查看草稿”入口。
-5. 草稿列表支持按计划筛选。
-
-生成后的草稿仍为 `draft`，不会自动提交审核。
-
-## 话题规则
-
-草稿保存时会保证话题不为空：
-
-- `hashtags` 存储时不带 `#`
-- AI 若把 `#tag` 写在正文末尾但 `hashtags` 为空，系统会从正文提取
-- 提取不到时，根据标题和正文生成 3-6 个默认话题
-- 编辑页支持中文逗号、英文逗号、空格、换行分隔
-- 提交审核前至少保证 3 个话题
-
-## 图片素材
-
-草稿详情页的“图片素材”区域提供：
-
-- `+ 添加图片`
-- 多图上传
-- 缩略图预览
-- 拖拽排序并保存
-- 删除图片
-- 生成本地 AI 封面占位图
-
-支持 `png/jpg/jpeg/webp`，最多 9 张。上传文件会复制到 `data/media/note-{id}/`，不会提交 GitHub。
-
-在线图片建议不自动下载版权不明图片。MVP 只建议用户自行确认素材版权；如果以后接入下载，只允许用户配置的合法图片 API。
-
-## 常见错误
-
-- 浏览器被关闭：流程取消，重新点击 `fill_only`。
-- 未登录：在打开的 Chrome profile 中手动登录。
-- 选择器失效：检查 `app/browser/selectors/xhs.yaml`。
-- 没有话题：保存草稿，系统会自动提取或生成。
-- 没有素材：允许纯文本流程，也可以生成本地封面占位图。
-- Chrome 启动失败：在设置里切换 Edge / Chromium。
+1. 新建内容计划，填写名称、目标人群、内容风格、目标、主题列表、每天生成数量和发布时间段。
+2. 进入计划详情页。
+3. 使用“批量生成草稿”“只生成未生成主题”“重新生成失败主题”。
+4. 生成后的草稿仍为 `draft`，不会自动提交审核。
 
 ## 验收脚本
 
@@ -99,8 +95,6 @@ OpenModel 推荐配置：
 .\.venv\Scripts\python.exe -m pytest -q
 ```
 
-`check_xhs_selectors.py --open-page` 只打开页面并检查元素，不填表、不发布。
-
 ## 文档
 
 - [架构](docs/ARCHITECTURE.md)
@@ -110,4 +104,4 @@ OpenModel 推荐配置：
 
 ## 仍保持禁用
 
-自动评论、自动私信、自动点赞、兴趣浏览、验证码绕过、风控绕过、反检测、cookie 导出/保存、批量刷量、批量骚扰。
+自动评论、自动私信、自动点赞、兴趣浏览、验证码绕过、风控绕过、反检测、cookie 导出或保存、批量刷量、批量骚扰。

@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
+from PIL import Image
 from sqlalchemy import select
 
 from app import main
@@ -159,15 +160,19 @@ def test_dry_run_does_not_start_playwright_or_visit_xhs(db, settings, tmp_path, 
     assert note.publish_mode == "dry_run"
     assert "dry_run_preview" in note.publish_error_message
     assert Path(note.publish_screenshot_path).exists()
+    assert note.publish_preview_html_path
+    assert Path(note.publish_preview_html_path).exists()
+    with Image.open(note.publish_screenshot_path) as image:
+        assert image.size == (1080, 1440)
 
 
 def test_invalid_and_unsupported_assets_block_publish(db, tmp_path):
     note = approved_note(db)
-    with pytest.raises(ValueError, match="does not exist"):
+    with pytest.raises(ValueError, match="不存在"):
         MaterialService(db).set_note_assets(note.id, [str(tmp_path / "missing.png")])
     bad = tmp_path / "bad.gif"
     bad.write_bytes(b"gif")
-    with pytest.raises(ValueError, match="Unsupported"):
+    with pytest.raises(ValueError, match="不支持"):
         MaterialService(db).set_note_assets(note.id, [str(bad)])
 
 
@@ -209,6 +214,37 @@ def test_media_upload_reorder_delete_and_generated_cover(db, tmp_path):
     cover = MaterialService(db).generate_cover(note.id)
     assert cover.source_type == "generated_cover"
     assert Path(cover.file_path).exists()
+    with Image.open(cover.file_path) as image:
+        assert image.size == (1080, 1440)
+
+
+def test_note_detail_media_ui_auto_uploads_and_has_no_upload_button(db):
+    note = approved_note(db)
+    with client_for(db) as client:
+        response = client.get(f"/notes/{note.id}")
+    main.app.dependency_overrides.clear()
+    assert response.status_code == 200
+    assert "添加图片" in response.text
+    assert "uploadForm.submit()" in response.text
+    assert "上传图片" not in response.text
+    assert "upload-dropzone" in response.text
+
+
+def test_uploaded_thumbnail_url_is_accessible(db, tmp_path):
+    note = approved_note(db)
+    image_path = tmp_path / "thumb.png"
+    Image.new("RGB", (20, 20), "#ffffff").save(image_path)
+
+    with client_for(db) as client:
+        with image_path.open("rb") as stream:
+            response = client.post(f"/notes/{note.id}/media/upload", files=[("files", ("thumb.png", stream, "image/png"))])
+        assert response.status_code == 200
+        page = client.get(f"/notes/{note.id}")
+        assert "/media/note-" in page.text
+        asset = db.scalar(select(MediaAsset).where(MediaAsset.note_id == note.id))
+        media_response = client.get(f"/media/note-{note.id}/{Path(asset.file_path).name}")
+        assert media_response.status_code == 200
+    main.app.dependency_overrides.clear()
 
 
 def test_content_plan_creates_topics_and_generates_drafts(db):

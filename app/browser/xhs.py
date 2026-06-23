@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import base64
 import html
 import json
 from contextlib import suppress
@@ -8,6 +7,7 @@ from datetime import datetime
 from pathlib import Path
 
 import yaml
+from PIL import Image, ImageDraw, ImageFont
 from playwright.sync_api import Error as PlaywrightError, TimeoutError as PlaywrightTimeoutError, sync_playwright
 from sqlalchemy.orm import Session
 
@@ -22,6 +22,7 @@ from app.services.state_machine import transition_note
 
 
 PUBLISH_MODES = {"dry_run", "fill_only", "publish_after_final_confirm"}
+PREVIEW_SIZE = (1080, 1440)
 
 
 class XHSBrowser:
@@ -45,14 +46,18 @@ class XHSBrowser:
         if not ok:
             self.audit.record("browser.fill_publish", "blocked", target_type="note", target_id=note_id, error_message=reason, metadata={"mode": mode})
             raise ValueError(reason)
-        screenshot = self._dry_run_preview(note, assets) if mode == "dry_run" else self._run_browser_fill(note, assets, mode=mode, click_publish=False)
+        if mode == "dry_run":
+            screenshot, preview_html = self._dry_run_preview(note, assets)
+        else:
+            screenshot, preview_html = self._run_browser_fill(note, assets, mode=mode, click_publish=False), ""
         transition_note(note, NoteStatus.PUBLISHING)
         transition_note(note, NoteStatus.WAITING_FINAL_CONFIRM)
         note.publish_mode = mode
         note.publish_screenshot_path = screenshot
-        note.publish_error_message = "dry_run_preview: 本地模拟预览，未打开小红书。" if mode == "dry_run" else ""
+        note.publish_preview_html_path = preview_html
+        note.publish_error_message = "dry_run_preview: 本地模拟预览，未打开小红书，未上传素材，未发布。" if mode == "dry_run" else ""
         self.db.commit()
-        self.audit.record("browser.fill_publish", "success", target_type="note", target_id=note.id, screenshot_path=screenshot, metadata={"mode": mode, "asset_count": len(assets)})
+        self.audit.record("browser.fill_publish", "success", target_type="note", target_id=note.id, screenshot_path=screenshot, metadata={"mode": mode, "asset_count": len(assets), "preview_html": preview_html})
         self._notify("Publish page filled", f"note_id={note.id}; status={note.status}; review screenshot ready.", note.id)
         return screenshot
 
@@ -97,26 +102,17 @@ class XHSBrowser:
             raise ValueError("发布前至少需要 3 个话题。")
         return note
 
-    def _dry_run_preview(self, note, assets: list[str]) -> str:
+    def _dry_run_preview(self, note, assets: list[str]) -> tuple[str, str]:
         directory = ROOT / self.settings.browser["screenshots_dir"]
         directory.mkdir(parents=True, exist_ok=True)
         timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
         html_path = directory / f"note-{note.id}-{timestamp}-dry-run-preview.html"
         png_path = directory / f"note-{note.id}-{timestamp}-dry-run-preview.png"
-        hashtags = " ".join(f"#{tag}" for tag in json.loads(note.hashtags_json or "[]"))
-        html_path.write_text(
-            "<!doctype html><meta charset='utf-8'><title>dry_run preview</title>"
-            "<style>body{font-family:Microsoft YaHei,sans-serif;max-width:760px;margin:40px auto;padding:24px;border:1px solid #ddd}"
-            ".badge{background:#fff3cd;padding:8px 12px;border-radius:8px}.asset{font-size:13px;color:#666}</style>"
-            f"<p class='badge'>dry_run 本地模拟预览：未打开小红书，未上传素材，未点击发布。</p>"
-            f"<h1>{html.escape(note.title)}</h1><article>{html.escape(note.body).replace(chr(10), '<br>')}</article>"
-            f"<p>{html.escape(hashtags)}</p>"
-            f"<h3>素材</h3>{''.join(f'<p class=asset>{html.escape(path)}</p>' for path in assets) or '<p class=asset>无图片素材，纯文本流程。</p>'}",
-            encoding="utf-8",
-        )
-        png_path.write_bytes(base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="))
+        hashtags = json.loads(note.hashtags_json or "[]")
+        _render_preview_png(png_path, note.title, note.body, hashtags, assets)
+        html_path.write_text(_preview_html(note.title, note.body, hashtags, assets), encoding="utf-8")
         self.audit.record("browser.dry_run_preview", "success", target_type="note", target_id=note.id, screenshot_path=str(png_path), metadata={"html_preview": str(html_path), "asset_count": len(assets)})
-        return str(png_path)
+        return str(png_path), str(html_path)
 
     def _run_browser_fill(self, note, assets: list[str], *, mode: str, click_publish: bool) -> str:
         screenshot = ""
@@ -126,6 +122,8 @@ class XHSBrowser:
         playwright = None
         step = "launch"
         selector_name = ""
+        keep_open = bool(self.settings.browser.get("keep_open_on_error", True))
+        failed = False
         try:
             playwright = sync_playwright().start()
             channel = self._browser_channel()
@@ -174,41 +172,73 @@ class XHSBrowser:
                 screenshot = self._screenshot(page, note.id, "publish-uncertain")
             return screenshot
         except PlaywrightClosedByUser as exc:
+            failed = True
             self._record_browser_failure(note, mode, click_publish, step, selector_name, str(exc), screenshot, page)
-            raise RuntimeError("浏览器已关闭，发布流程已取消。") from None
-        except PlaywrightTimeoutError as exc:
-            self._record_browser_failure(note, mode, click_publish, step, selector_name, "等待发布页编辑器超时，请确认已登录小红书并检查页面选择器。", screenshot, page)
-            raise RuntimeError("等待发布页编辑器超时，请确认已登录小红书并检查页面选择器。") from None
+            raise RuntimeError("浏览器已被用户关闭，流程取消。") from None
+        except PlaywrightTimeoutError:
+            failed = True
+            candidates = self.selectors.get(selector_name or "title", [])
+            message = f"没有找到发布页编辑器。浏览器已保留，请检查页面结构或更新选择器。当前步骤：{step}；选择器候选：{selector_list(candidates)}"
+            self._record_browser_failure(note, mode, click_publish, step, selector_name or "title", message, screenshot, page)
+            raise RuntimeError(message) from None
         except Exception as exc:
+            failed = True
             message = friendly_browser_error(exc)
             self._record_browser_failure(note, mode, click_publish, step, selector_name, message, screenshot, page)
             raise RuntimeError(message) from None
         finally:
-            if context is not None:
+            should_close = not failed or not keep_open
+            if should_close and context is not None:
                 with suppress(Exception):
                     context.close()
-            if browser is not None:
+            if should_close and browser is not None:
                 with suppress(Exception):
                     browser.close()
-            if playwright is not None:
+            if should_close and playwright is not None:
                 with suppress(Exception):
                     playwright.stop()
 
     def _wait_for_login_and_editor(self, page) -> None:
-        print("请在打开的浏览器中手动登录小红书。本程序不会读取、导出或保存 cookie。")
+        print("请在打开的 Chrome 中扫码登录小红书。本程序不会读取、导出或保存 cookie。")
+        publish_url = self.settings.browser["publish_url"]
         deadline = datetime.now().timestamp() + 180
+        navigated_after_login = False
+        last_error: Exception | None = None
         while datetime.now().timestamp() < deadline:
             current_url = getattr(page, "url", "") or ""
-            if "/login" not in current_url and "login?" not in current_url:
+            if "/login" in current_url or "login?" in current_url:
+                with suppress(Exception):
+                    page.wait_for_timeout(2000)
+                continue
+            if not navigated_after_login and current_url and "publish" not in current_url:
+                with suppress(Exception):
+                    page.goto(publish_url)
+                    navigated_after_login = True
+            try:
+                find_first_visible(page, self.selectors["title"], timeout=3_000)
                 return
-            with suppress(Exception):
-                page.wait_for_timeout(2000)
-        raise PlaywrightTimeoutError("login timeout")
+            except Exception as exc:
+                last_error = exc
+                if not current_url:
+                    break
+                if not navigated_after_login:
+                    with suppress(Exception):
+                        page.goto(publish_url)
+                        navigated_after_login = True
+                with suppress(Exception):
+                    page.wait_for_timeout(2000)
+        raise PlaywrightTimeoutError(f"editor timeout: {last_error}")
 
     def _record_browser_failure(self, note, mode: str, click_publish: bool, step: str, selector_name: str, message: str, screenshot: str, page) -> None:
-        if page is not None and not screenshot:
+        current_url = ""
+        page_title = ""
+        if page is not None:
+            current_url = getattr(page, "url", "") or ""
             with suppress(Exception):
-                screenshot = self._screenshot(page, note.id, "failed")
+                page_title = page.title() if hasattr(page, "title") else ""
+            if not screenshot:
+                with suppress(Exception):
+                    screenshot = self._screenshot(page, note.id, "failed")
         if not screenshot:
             screenshot = self._unavailable_screenshot(note.id)
         self.db.rollback()
@@ -220,7 +250,12 @@ class XHSBrowser:
             action_type="final_confirm" if click_publish else "fill_publish",
             error_message=message,
             screenshot_path=screenshot,
-            metadata_json=json.dumps({"selector_candidates": self.selectors.get(selector_name, [])}, ensure_ascii=False),
+            metadata_json=json.dumps({
+                "current_url": current_url,
+                "page_title": page_title,
+                "selector_candidates": self.selectors.get(selector_name, []),
+                "keep_open_on_error": bool(self.settings.browser.get("keep_open_on_error", True)),
+            }, ensure_ascii=False),
         ))
         self.db.commit()
         self.audit.record(
@@ -230,7 +265,7 @@ class XHSBrowser:
             target_id=note.id,
             error_message=message,
             screenshot_path=screenshot,
-            metadata={"mode": mode, "step": step, "selector_name": selector_name},
+            metadata={"mode": mode, "step": step, "selector_name": selector_name, "current_url": current_url, "page_title": page_title},
         )
         current = self.notes.get(note.id)
         if current and current.status == NoteStatus.PUBLISHING:
@@ -269,8 +304,7 @@ class XHSBrowser:
         directory = ROOT / self.settings.browser["screenshots_dir"]
         directory.mkdir(parents=True, exist_ok=True)
         path = directory / f"note-{note_id}-{datetime.now():%Y%m%d-%H%M%S}-page-unavailable.png"
-        pixel_png = base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=")
-        path.write_bytes(pixel_png)
+        _render_preview_png(path, "页面不可用", "浏览器已关闭或启动失败，无法截图。", [], [])
         return str(path)
 
     def _browser_channel(self) -> str:
@@ -315,9 +349,86 @@ def find_first_visible(page, selector_candidates, timeout: int = 30_000):
 def friendly_browser_error(exc: Exception) -> str:
     text = str(exc)
     if "Target page, context or browser has been closed" in text:
-        return "浏览器已关闭，发布流程已取消。"
-    if "Executable doesn't exist" in text or "channel" in text and "chrome" in text.casefold():
+        return "浏览器已被用户关闭，流程取消。"
+    if "Executable doesn't exist" in text or ("channel" in text and "chrome" in text.casefold()):
         return "Chrome 启动失败，请确认已安装 Chrome，或在设置里切换为 Edge / Chromium。"
     if "No visible selector" in text or "Timeout" in text:
         return "没有找到小红书发布页编辑器，请先手动登录，或更新选择器配置。"
     return text.splitlines()[0][:300] or "浏览器流程失败。"
+
+
+def _font(size: int, bold: bool = False):
+    candidates = [
+        Path("C:/Windows/Fonts/msyhbd.ttc" if bold else "C:/Windows/Fonts/msyh.ttc"),
+        Path("C:/Windows/Fonts/simhei.ttf"),
+        Path("C:/Windows/Fonts/arial.ttf"),
+    ]
+    for path in candidates:
+        if path.exists():
+            return ImageFont.truetype(str(path), size=size)
+    return ImageFont.load_default()
+
+
+def _short(text: str, limit: int) -> str:
+    value = " ".join((text or "").split())
+    return value[:limit] + ("..." if len(value) > limit else "")
+
+
+def _render_preview_png(path: Path, title: str, body: str, hashtags: list[str], assets: list[str]) -> None:
+    width, height = PREVIEW_SIZE
+    image = Image.new("RGB", PREVIEW_SIZE, "#f6f7fb")
+    draw = ImageDraw.Draw(image)
+    draw.rounded_rectangle((70, 70, width - 70, height - 70), radius=54, fill="#ffffff", outline="#d0d5dd", width=3)
+    draw.rounded_rectangle((110, 110, 390, 166), radius=28, fill="#fff1f3", outline="#ffccd5", width=2)
+    draw.text((140, 123), "dry_run 本地预览", font=_font(28, True), fill="#c01048")
+    draw.text((110, 220), _short(title, 32), font=_font(58, True), fill="#101828")
+    y = 325
+    for line in _short(body, 260).split(" "):
+        if y > 790:
+            break
+        draw.text((110, y), line, font=_font(32), fill="#344054")
+        y += 48
+    tag_text = " ".join(f"#{tag}" for tag in hashtags)
+    draw.text((110, 840), _short(tag_text, 80), font=_font(30, True), fill="#3157a4")
+    draw.rounded_rectangle((110, 910, width - 110, 1240), radius=30, fill="#f2f4f7", outline="#e4e7ec")
+    draw.text((145, 945), f"图片素材：{len(assets)} 张", font=_font(34, True), fill="#344054")
+    for index, asset in enumerate(assets[:6], start=1):
+        x = 145 + ((index - 1) % 3) * 285
+        yy = 1015 + ((index - 1) // 3) * 88
+        draw.rounded_rectangle((x, yy, x + 250, yy + 58), radius=18, fill="#ffffff", outline="#d0d5dd")
+        draw.text((x + 18, yy + 14), f"{index}. {_short(Path(asset).name, 14)}", font=_font(22), fill="#475467")
+    draw.text((110, height - 155), "未打开小红书 | 未上传素材 | 未点击发布", font=_font(30, True), fill="#b42318")
+    image.save(path, format="PNG")
+
+
+def _preview_html(title: str, body: str, hashtags: list[str], assets: list[str]) -> str:
+    tags = " ".join(f"#{html.escape(tag)}" for tag in hashtags)
+    items = "".join(f"<li>{index}. {html.escape(Path(path).name)}</li>" for index, path in enumerate(assets, start=1))
+    if not items:
+        items = "<li>无图片素材，纯文本预览。</li>"
+    return f"""<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <style>
+    body{{margin:0;background:#f6f7fb;font-family:Inter,'Microsoft YaHei',sans-serif;color:#182230}}
+    .card{{max-width:760px;margin:24px auto;padding:28px;border:1px solid #d0d5dd;border-radius:28px;background:#fff;box-shadow:0 16px 40px #10182814}}
+    .badge{{display:inline-block;padding:8px 14px;border-radius:999px;background:#fff1f3;color:#c01048;font-weight:700}}
+    h1{{font-size:34px;line-height:1.25;margin:24px 0 16px}}
+    article{{font-size:16px;line-height:1.8;white-space:pre-wrap}}
+    .tags{{color:#3157a4;font-weight:700}}
+    .assets{{background:#f2f4f7;border-radius:18px;padding:16px}}
+    .safe{{margin-top:18px;padding:12px;border-radius:14px;background:#fffaeb;color:#93370d}}
+  </style>
+</head>
+<body>
+  <main class="card">
+    <span class="badge">dry_run 本地模拟预览</span>
+    <h1>{html.escape(title)}</h1>
+    <article>{html.escape(body)}</article>
+    <p class="tags">{tags}</p>
+    <section class="assets"><strong>图片素材</strong><ul>{items}</ul></section>
+    <p class="safe">未打开小红书，未上传素材，未点击发布。</p>
+  </main>
+</body>
+</html>"""

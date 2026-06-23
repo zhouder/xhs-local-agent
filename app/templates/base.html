@@ -8,8 +8,11 @@
   <link rel="stylesheet" href="{{ url_for('static', path='/style.css') }}">
 </head>
 <body>
-  <header><strong>XHS Local Agent</strong><span class="badge">Safe publish workflow</span></header>
-  <nav>
+  <header class="topbar">
+    <strong>XHS Local Agent</strong>
+    <span class="badge">Safe publish workflow</span>
+  </header>
+  <nav class="nav">
     <a href="/">Dashboard</a>
     <a href="/notes">草稿</a>
     <a href="/plans">内容计划</a>
@@ -18,8 +21,8 @@
     <a href="/records/commands">命令事件</a>
     <a href="/settings">设置</a>
   </nav>
-  <main>
-    {% if message %}<p class="notice">{{ message }}</p>{% endif %}
+  <main class="main">
+    {% if message %}<p class="alert success">{{ message }}</p>{% endif %}
     {% block content %}{% endblock %}
   </main>
 </body>

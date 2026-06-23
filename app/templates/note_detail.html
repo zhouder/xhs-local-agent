@@ -1,84 +1,164 @@
-{% extends "base.html" %}{% block title %}草稿 {{ note.id }}{% endblock %}
+{% extends "base.html" %}
+{% block title %}草稿 #{{ note.id }}{% endblock %}
 {% block content %}
-<div class="row between"><div><h1>草稿 #{{ note.id }}</h1><span class="status">{{ note.status }}</span></div><a href="/notes">返回列表</a></div>
-{% if error %}<p class="form-error">{{ error }}</p>{% endif %}
-
-<section>
-<form method="post" action="/notes/{{ note.id }}/edit" class="stack">
-  <label>标题<input name="title" maxlength="100" value="{{ note.title }}" required></label>
-  <label>正文<textarea name="body" rows="13" required>{{ note.body }}</textarea></label>
-  <label>话题（支持中文逗号、英文逗号、空格、换行分隔；保存时自动去掉 #）
-    <textarea name="hashtags" rows="2">{{ hashtags }}</textarea>
-  </label>
-  <label>封面提示词<textarea name="cover_prompt" rows="3">{{ note.cover_prompt }}</textarea></label>
-  <button>保存文字和话题</button>
-</form>
-</section>
-
-<section>
-  <div class="row between"><div><h2>图片素材</h2><p class="muted">支持 1-9 张 png/jpg/jpeg/webp。上传文件会复制到本地 data/media，不提交 GitHub。</p></div>
-    <form method="post" action="/notes/{{ note.id }}/media/generate-cover"><button>生成 AI 封面占位图</button></form>
+<div class="page-header">
+  <div>
+    <p class="eyebrow">Note Detail</p>
+    <h1>草稿 #{{ note.id }}</h1>
+    <span class="status">{{ note.status }}</span>
   </div>
-  <form method="post" action="/notes/{{ note.id }}/media/upload" enctype="multipart/form-data" class="stack">
-    <label class="upload-card">+ 添加图片<input type="file" name="files" accept=".png,.jpg,.jpeg,.webp,image/png,image/jpeg,image/webp" multiple></label>
-    <button class="primary">上传图片</button>
-  </form>
-  {% if media_views %}
-  <form method="post" action="/notes/{{ note.id }}/media/reorder" class="stack">
-    <div class="media-grid">
-    {% for asset in media_views %}
-      <article class="media-card" draggable="true">
-        <span class="drag-handle">拖拽排序 #{{ asset.order }}</span>
-        <img src="{{ asset.url }}" alt="{{ asset.filename }}">
-        <strong>{{ asset.filename }}</strong>
-        <small>{{ asset.source_type }} · {{ asset.license_note }}</small>
-        <input type="hidden" name="asset_id" value="{{ asset.id }}">
-        <button form="delete-{{ asset.id }}" class="danger">删除</button>
-      </article>
-    {% endfor %}
-    </div>
-    <input type="hidden" name="ordered_ids" id="ordered_ids" value="{{ media_views|map(attribute='id')|join(',') }}">
-    <button>保存图片顺序</button>
-  </form>
-  {% for asset in media_views %}
-    <form id="delete-{{ asset.id }}" method="post" action="/notes/{{ note.id }}/media/{{ asset.id }}/delete"></form>
-  {% endfor %}
-  {% else %}
-    <p class="warning">未添加图片，可纯文本发布；也可以生成 AI 封面占位图。</p>
-  {% endif %}
-</section>
-
-<section><h2>审核与发布主链路</h2>
-<p class="warning">dry_run 是本地模拟预览，不打开小红书。fill_only 才会打开小红书并填表，但不发布。最终确认后才允许点击发布按钮。</p>
-<div class="actions">
-{% if note.status in ['draft'] %}<form method="post" action="/notes/{{ note.id }}/submit"><button class="primary">提交审核</button></form>{% endif %}
-{% if note.status == 'pending_review' %}
-  <form method="post" action="/notes/{{ note.id }}/approve"><input type="hidden" name="confirm" value="APPROVE"><button class="primary">审核通过</button></form>
-  <form method="post" action="/notes/{{ note.id }}/reject"><input name="reason" placeholder="拒绝原因"><button class="danger">拒绝</button></form>
-{% endif %}
-{% if note.status not in ['publishing','waiting_final_confirm','published','cancelled'] %}<form method="post" action="/notes/{{ note.id }}/regenerate"><button>重新生成</button></form>{% endif %}
-{% if note.status == 'approved' %}
-  <form method="post" action="/notes/{{ note.id }}/dry-run"><button>dry_run 本地模拟预览</button></form>
-  <form method="post" action="/notes/{{ note.id }}/fill"><input type="hidden" name="mode" value="fill_only"><button class="primary">fill_only 打开小红书并填表</button></form>
-  <form method="post" action="/notes/{{ note.id }}/fill"><input type="hidden" name="mode" value="publish_after_final_confirm"><button>填表后等待最终确认</button></form>
-{% endif %}
-{% if note.status == 'waiting_final_confirm' %}<a class="button primary" href="/notes/{{ note.id }}/final-review">进入最终确认</a>{% endif %}
+  <a class="button secondary" href="/notes">返回列表</a>
 </div>
-</section>
+
+{% if error %}<p class="alert error">{{ error }}</p>{% endif %}
+
+<div class="detail-layout">
+  <div class="stack">
+    <section class="card">
+      <div class="section-heading">
+        <div>
+          <h2>内容编辑</h2>
+          <p class="muted">保存正文后，如草稿已提交或批准，审核状态会重置。</p>
+        </div>
+      </div>
+      <form method="post" action="/notes/{{ note.id }}/edit" class="form-grid single">
+        <label>标题
+          <input name="title" maxlength="100" value="{{ note.title }}" required>
+        </label>
+        <label>正文
+          <textarea name="body" rows="13" required>{{ note.body }}</textarea>
+        </label>
+        <label>话题
+          <textarea name="hashtags" rows="2">{{ hashtags }}</textarea>
+          <span class="field-help">支持中文逗号、英文逗号、空格和换行分隔，保存时会自动去掉 #。</span>
+        </label>
+        <label>封面提示词
+          <textarea name="cover_prompt" rows="3">{{ note.cover_prompt }}</textarea>
+        </label>
+        <div class="actions">
+          <button class="primary">保存文字和话题</button>
+        </div>
+      </form>
+    </section>
+
+    <section class="card" id="media-section">
+      <div class="section-heading">
+        <div>
+          <h2>图片素材</h2>
+          <p class="muted">支持 1-9 张 png/jpg/jpeg/webp。文件会复制到本地 data/media，不提交 GitHub。</p>
+        </div>
+        <form method="post" action="/notes/{{ note.id }}/media/generate-cover">
+          <button class="secondary">生成本地 AI 封面</button>
+        </form>
+      </div>
+
+      <form id="upload-form" method="post" action="/notes/{{ note.id }}/media/upload" enctype="multipart/form-data">
+        <label class="upload-dropzone" for="media-files">
+          <span class="upload-plus">+</span>
+          <strong>添加图片</strong>
+          <small>选择后自动上传，可一次选择多张</small>
+          <input id="media-files" type="file" name="files" accept=".png,.jpg,.jpeg,.webp,image/png,image/jpeg,image/webp" multiple>
+        </label>
+        <p id="upload-loading" class="muted hidden">正在上传，请稍候...</p>
+      </form>
+
+      {% if media_views %}
+      <form id="reorder-form" method="post" action="/notes/{{ note.id }}/media/reorder" class="stack">
+        <div class="media-grid" id="media-grid">
+        {% for asset in media_views %}
+          <article class="media-card" draggable="true" data-asset-id="{{ asset.id }}">
+            <div class="media-thumb-wrap">
+              <img src="{{ asset.url }}" alt="{{ asset.filename }}">
+              <span class="media-index">#{{ asset.order }}</span>
+            </div>
+            <div class="media-meta">
+              <strong title="{{ asset.filename }}">{{ asset.filename }}</strong>
+              <small>{{ asset.source_type }} · {{ asset.license_note }}</small>
+            </div>
+            <div class="media-actions">
+              <span class="drag-handle">拖拽排序</span>
+              <button form="delete-{{ asset.id }}" class="danger ghost" type="submit">删除</button>
+            </div>
+            <input type="hidden" name="asset_id" value="{{ asset.id }}">
+          </article>
+        {% endfor %}
+        </div>
+        <input type="hidden" name="ordered_ids" id="ordered_ids" value="{{ media_views|map(attribute='id')|join(',') }}">
+        <div class="actions">
+          <button class="secondary" id="save-order" disabled>保存顺序</button>
+          <span class="field-help">拖拽图片后保存顺序。</span>
+        </div>
+      </form>
+      {% for asset in media_views %}
+        <form id="delete-{{ asset.id }}" method="post" action="/notes/{{ note.id }}/media/{{ asset.id }}/delete"></form>
+      {% endfor %}
+      {% else %}
+        <div class="empty-state">还没有图片。可以直接添加图片，或生成一张本地 AI 封面。</div>
+      {% endif %}
+    </section>
+  </div>
+
+  <aside class="card sticky-panel">
+    <h2>审核与发布</h2>
+    <p class="alert warning">dry_run 只生成本地预览，不打开小红书。fill_only 会打开小红书并填表，但不会发布。最终确认后才允许点击发布按钮。</p>
+    <div class="actions vertical">
+      {% if note.status in ['draft'] %}
+        <form method="post" action="/notes/{{ note.id }}/submit"><button class="primary full">提交审核</button></form>
+      {% endif %}
+      {% if note.status == 'pending_review' %}
+        <form method="post" action="/notes/{{ note.id }}/approve"><input type="hidden" name="confirm" value="APPROVE"><button class="primary full">审核通过</button></form>
+        <form method="post" action="/notes/{{ note.id }}/reject" class="inline-form"><input name="reason" placeholder="拒绝原因"><button class="danger">拒绝</button></form>
+      {% endif %}
+      {% if note.status not in ['publishing','waiting_final_confirm','published','cancelled'] %}
+        <form method="post" action="/notes/{{ note.id }}/regenerate"><button class="secondary full">重新生成</button></form>
+      {% endif %}
+      {% if note.status == 'approved' %}
+        <form method="post" action="/notes/{{ note.id }}/dry-run"><button class="secondary full">dry_run 本地预览</button></form>
+        <form method="post" action="/notes/{{ note.id }}/fill"><input type="hidden" name="mode" value="fill_only"><button class="primary full">fill_only 打开小红书并填表</button></form>
+        <form method="post" action="/notes/{{ note.id }}/fill"><input type="hidden" name="mode" value="publish_after_final_confirm"><button class="secondary full">填表后等待最终确认</button></form>
+      {% endif %}
+      {% if note.status == 'waiting_final_confirm' %}
+        <a class="button primary full" href="/notes/{{ note.id }}/final-review">进入最终确认</a>
+      {% endif %}
+    </div>
+  </aside>
+</div>
 
 <script>
-const grid = document.querySelector('.media-grid');
-if (grid) {
+const uploadInput = document.getElementById('media-files');
+const uploadForm = document.getElementById('upload-form');
+const uploadLoading = document.getElementById('upload-loading');
+if (uploadInput && uploadForm) {
+  uploadInput.addEventListener('change', () => {
+    if (uploadInput.files && uploadInput.files.length > 0) {
+      uploadLoading?.classList.remove('hidden');
+      uploadForm.submit();
+    }
+  });
+}
+
+const grid = document.getElementById('media-grid');
+const orderedInput = document.getElementById('ordered_ids');
+const saveOrder = document.getElementById('save-order');
+if (grid && orderedInput) {
   let dragged = null;
+  const syncOrder = () => {
+    orderedInput.value = [...grid.querySelectorAll('.media-card')].map(card => card.dataset.assetId).join(',');
+    saveOrder.disabled = false;
+  };
   grid.querySelectorAll('.media-card').forEach(card => {
-    card.addEventListener('dragstart', () => dragged = card);
+    card.addEventListener('dragstart', () => {
+      dragged = card;
+      card.classList.add('dragging');
+    });
+    card.addEventListener('dragend', () => card.classList.remove('dragging'));
     card.addEventListener('dragover', event => event.preventDefault());
     card.addEventListener('drop', event => {
       event.preventDefault();
       if (dragged && dragged !== card) {
         const cards = [...grid.children];
         if (cards.indexOf(dragged) < cards.indexOf(card)) card.after(dragged); else card.before(dragged);
-        document.getElementById('ordered_ids').value = [...grid.querySelectorAll('input[name=asset_id]')].map(i => i.value).join(',');
+        syncOrder();
       }
     });
   });
