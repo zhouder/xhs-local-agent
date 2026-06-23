@@ -12,6 +12,15 @@
   <div class="grid-form">
     <label>最少字数<input type="number" name="min_length" value="200" min="80" max="2000"></label>
     <label>最多字数<input type="number" name="max_length" value="600" min="100" max="3000"></label>
+    <label>发布类型
+      <select name="publish_kind">
+        <option value="image_text_to_image">图文笔记：文字生图</option>
+        <option value="image_upload">图文笔记：上传自己的图片</option>
+        <option value="video_upload">视频笔记：上传视频</option>
+      </select>
+    </label>
+  </div>
+  <div class="grid-form">
     <label class="check"><input type="checkbox" name="controversial_title" value="true"> 争议性标题</label>
     <label class="check"><input type="checkbox" name="educational" value="true"> 偏科普</label>
     <label class="check"><input type="checkbox" name="growth_oriented" value="true" checked> 偏涨粉</label>

@@ -35,12 +35,59 @@
         <label>封面提示词
           <textarea name="cover_prompt" rows="3">{{ note.cover_prompt }}</textarea>
         </label>
+        <label>发布类型
+          <select name="publish_kind">
+            {% for value, label in publish_kind_options.items() %}
+              <option value="{{ value }}" {% if note.publish_kind == value %}selected{% endif %}>{{ label }}</option>
+            {% endfor %}
+          </select>
+          <span class="field-help">保存后页面会显示对应素材区域。</span>
+        </label>
+        <label>文字生图文案 / prompt
+          <textarea name="text_to_image_prompt" rows="4" placeholder="仅文字生图模式使用。为空时会使用封面提示词或标题生成短 prompt。">{{ note.text_to_image_prompt }}</textarea>
+        </label>
+        <label>文字生图风格偏好
+          <input name="text_to_image_style" value="{{ note.text_to_image_style }}" placeholder="例如：清爽、手账风、科技感">
+        </label>
         <div class="actions">
           <button class="primary">保存文字和话题</button>
+          <button class="secondary" type="submit">保存文字生图文案</button>
         </div>
       </form>
     </section>
 
+    {% if note.publish_kind == 'video_upload' %}
+    <section class="card" id="video-section">
+      <div class="section-heading">
+        <div>
+          <h2>视频素材</h2>
+          <p class="muted">支持 1 个 mp4/mov。文件会复制到本地 data/media，不提交 GitHub。封面设置暂作为 TODO。</p>
+        </div>
+      </div>
+      <form id="video-upload-form" method="post" action="/notes/{{ note.id }}/media/video/upload" enctype="multipart/form-data">
+        <label class="upload-dropzone" for="video-file">
+          <span class="upload-plus">+</span>
+          <strong>添加视频</strong>
+          <small>选择后自动上传，只保留 1 个视频</small>
+          <input id="video-file" type="file" name="file" accept=".mp4,.mov,video/mp4,video/quicktime">
+        </label>
+        <p id="video-upload-loading" class="muted hidden">正在上传视频，请稍候...</p>
+      </form>
+      {% if video_view %}
+        <div class="media-card">
+          <div class="media-meta">
+            <strong title="{{ video_view.filename }}">{{ video_view.filename }}</strong>
+            <small>{{ (video_view.size / 1024 / 1024)|round(2) }} MB · {{ video_view.source_type }} · {{ video_view.license_note }}</small>
+          </div>
+          <form method="post" action="/notes/{{ note.id }}/media/{{ video_view.id }}/delete">
+            <button class="danger ghost" type="submit">删除视频</button>
+          </form>
+        </div>
+      {% else %}
+        <div class="empty-state">视频笔记需要先添加一个 mp4/mov 视频文件。</div>
+      {% endif %}
+    </section>
+    {% elif note.publish_kind == 'image_upload' %}
     <section class="card" id="media-section">
       <div class="section-heading">
         <div>
@@ -96,15 +143,28 @@
         <div class="empty-state">还没有图片。可以直接添加图片，或生成一张本地 AI 封面。</div>
       {% endif %}
     </section>
+    {% else %}
+    <section class="card" id="text-to-image-section">
+      <div class="section-heading">
+        <div>
+          <h2>文字生图</h2>
+          <p class="muted">不需要上传图片。fill_only 会进入小红书【写文字生成图片】，使用上方 prompt 生成图片后继续填写标题正文。</p>
+        </div>
+      </div>
+      <div class="empty-state">请在“内容编辑”里填写生图文案和风格偏好，然后点击“保存文字生图文案”。“让 AI 生成文字生图文案”将作为后续增强。</div>
+    </section>
+    {% endif %}
   </div>
 
   <aside class="card sticky-panel">
     <h2>审核与发布</h2>
     <p class="alert warning">dry_run 只生成本地预览，不打开小红书。fill_only 会打开小红书并填表，但不会发布。最终确认后才允许点击发布按钮。</p>
-    {% if media_views %}
-      <p class="alert success">有图片素材：fill_only 将直接打开小红书【上传图文】页面 target=image。</p>
+    {% if note.publish_kind == 'video_upload' %}
+      <p class="alert success">视频笔记：fill_only 将打开【上传视频】页面，上传视频并填写标题正文。不会点击发布。</p>
+    {% elif note.publish_kind == 'image_upload' %}
+      <p class="alert success">图文笔记：fill_only 将打开【上传图文】页面，先上传图片，再填写标题正文。不会点击发布。</p>
     {% else %}
-      <p class="alert success">无图片素材：fill_only 将直接打开小红书【写长文】页面 target=article。</p>
+      <p class="alert success">图文笔记：fill_only 将打开【上传图文】页面，使用小红书【写文字生成图片】生成图片，再填写标题正文。不会点击发布。</p>
     {% endif %}
     <div class="actions vertical">
       {% if note.status in ['draft'] %}
@@ -138,6 +198,18 @@ if (uploadInput && uploadForm) {
     if (uploadInput.files && uploadInput.files.length > 0) {
       uploadLoading?.classList.remove('hidden');
       uploadForm.submit();
+    }
+  });
+}
+
+const videoInput = document.getElementById('video-file');
+const videoUploadForm = document.getElementById('video-upload-form');
+const videoUploadLoading = document.getElementById('video-upload-loading');
+if (videoInput && videoUploadForm) {
+  videoInput.addEventListener('change', () => {
+    if (videoInput.files && videoInput.files.length > 0) {
+      videoUploadLoading?.classList.remove('hidden');
+      videoUploadForm.submit();
     }
   });
 }

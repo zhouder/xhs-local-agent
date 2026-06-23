@@ -18,6 +18,7 @@ from app.repositories import AuditRepository, NoteRepository
 
 
 SUPPORTED_IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp"}
+SUPPORTED_VIDEO_SUFFIXES = {".mp4", ".mov"}
 COVER_SIZE = (1080, 1440)
 
 
@@ -26,6 +27,8 @@ def parse_asset_paths(text: str) -> list[str]:
 
 
 def validate_image_assets(paths: list[str]) -> tuple[bool, str]:
+    if not paths:
+        return False, "图文笔记需要先添加 1-9 张图片，或切换为文字生图。"
     if len(paths) > 9:
         return False, "最多只能添加 9 张图片。"
     for item in paths:
@@ -34,6 +37,17 @@ def validate_image_assets(paths: list[str]) -> tuple[bool, str]:
             return False, f"图片文件不存在：{item}"
         if path.suffix.casefold() not in SUPPORTED_IMAGE_SUFFIXES:
             return False, f"不支持的图片格式：{item}"
+    return True, ""
+
+
+def validate_video_asset(path_text: str) -> tuple[bool, str]:
+    if not path_text:
+        return False, "视频笔记需要先添加一个 mp4/mov 视频文件。"
+    path = Path(path_text)
+    if not path.exists():
+        return False, f"视频文件不存在：{path_text}"
+    if path.suffix.casefold() not in SUPPORTED_VIDEO_SUFFIXES:
+        return False, f"不支持的视频格式：{path_text}"
     return True, ""
 
 
@@ -52,6 +66,7 @@ class MaterialService:
             self.audit.record("materials.validate", "blocked", target_type="note", target_id=note_id, error_message=reason)
             raise ValueError(reason)
         self.notes.replace_media_paths(note_id, paths)
+        note.publish_kind = "image_upload"
         self.db.commit()
         self.audit.record("materials.updated", "success", target_type="note", target_id=note_id, metadata={"count": len(paths)})
 
@@ -62,7 +77,7 @@ class MaterialService:
         files = [item for item in files if getattr(item, "filename", "")]
         if not files:
             raise ValueError("请选择要上传的图片。")
-        existing = self.notes.media_assets(note_id)
+        existing = [asset for asset in self.notes.media_assets(note_id) if asset.asset_type == "image"]
         if len(existing) + len(files) > 9:
             raise ValueError("最多只能添加 9 张图片。")
         directory = ROOT / "data" / "media" / f"note-{note_id}"
@@ -92,12 +107,51 @@ class MaterialService:
             )
             self.db.add(row)
             created.append(row)
+        note.publish_kind = "image_upload"
         self.db.commit()
         self.audit.record("materials.upload", "success", target_type="note", target_id=note_id, metadata={"count": len(created)})
         return created
 
+    def upload_video(self, note_id: int, upload) -> MediaAsset:
+        note = self.notes.get(note_id)
+        if not note:
+            raise LookupError("草稿不存在。")
+        if not getattr(upload, "filename", ""):
+            raise ValueError("请选择要上传的视频。")
+        original = Path(upload.filename or "video").name
+        suffix = Path(original).suffix.casefold()
+        if suffix not in SUPPORTED_VIDEO_SUFFIXES:
+            message = f"不支持的视频格式：{original}"
+            self.audit.record("materials.video_upload", "blocked", target_type="note", target_id=note_id, error_message=message)
+            raise ValueError(message)
+        for asset in [item for item in self.notes.media_assets(note_id) if item.asset_type == "video"]:
+            self.delete(note_id, asset.id)
+        directory = ROOT / "data" / "media" / f"note-{note_id}"
+        directory.mkdir(parents=True, exist_ok=True)
+        target = directory / f"{uuid.uuid4().hex}{suffix}"
+        with target.open("wb") as output:
+            shutil.copyfileobj(upload.file, output)
+        row = MediaAsset(
+            note_id=note_id,
+            path=str(target),
+            file_path=str(target),
+            media_type="video",
+            asset_type="video",
+            mime_type=mimetypes.guess_type(str(target))[0] or "video/*",
+            upload_order=1,
+            status="ready",
+            source_type="upload",
+            license_note="用户本地上传，版权由用户自行确认。",
+        )
+        note.video_file_path = str(target)
+        note.publish_kind = "video_upload"
+        self.db.add(row)
+        self.db.commit()
+        self.audit.record("materials.video_upload", "success", target_type="note", target_id=note_id, metadata={"filename": original})
+        return row
+
     def reorder(self, note_id: int, ordered_ids: list[int]) -> None:
-        assets = {asset.id: asset for asset in self.notes.media_assets(note_id)}
+        assets = {asset.id: asset for asset in self.notes.media_assets(note_id) if asset.asset_type == "image"}
         if set(ordered_ids) != set(assets):
             raise ValueError("图片排序参数无效。")
         for index, asset_id in enumerate(ordered_ids, start=1):
@@ -110,9 +164,12 @@ class MaterialService:
         if not asset:
             raise LookupError("图片不存在。")
         path = Path(asset.file_path or asset.path)
+        note = self.notes.get(note_id)
+        if note and asset.asset_type == "video":
+            note.video_file_path = ""
         self.db.delete(asset)
         self.db.flush()
-        for index, row in enumerate(self.notes.media_assets(note_id), start=1):
+        for index, row in enumerate([item for item in self.notes.media_assets(note_id) if item.asset_type == "image"], start=1):
             row.upload_order = index
         self.db.commit()
         if path.exists() and ROOT in path.resolve().parents:
@@ -123,7 +180,7 @@ class MaterialService:
         note = self.notes.get(note_id)
         if not note:
             raise LookupError("草稿不存在。")
-        if len(self.notes.media_assets(note_id)) >= 9:
+        if len([asset for asset in self.notes.media_assets(note_id) if asset.asset_type == "image"]) >= 9:
             raise ValueError("最多只能添加 9 张图片。")
         directory = ROOT / "data" / "media" / f"note-{note_id}"
         directory.mkdir(parents=True, exist_ok=True)
@@ -136,12 +193,13 @@ class MaterialService:
             media_type="image",
             asset_type="image",
             mime_type="image/png",
-            upload_order=len(self.notes.media_assets(note_id)) + 1,
+            upload_order=len([asset for asset in self.notes.media_assets(note_id) if asset.asset_type == "image"]) + 1,
             status="ready",
             source_type="generated_cover",
             license_note=f"本地生成封面，无外部版权图片：{_clean_text(note.title)}",
         )
         self.db.add(row)
+        note.publish_kind = "image_upload"
         self.db.commit()
         self.audit.record("materials.generated_cover", "success", target_type="note", target_id=note_id, metadata={"path": str(target), "size": list(COVER_SIZE)})
         return row

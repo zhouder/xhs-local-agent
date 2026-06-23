@@ -14,3 +14,10 @@ def test_all_required_tables_initialize(db):
     for table in EXPECTED_TABLES:
         columns = {column["name"] for column in inspect(db.get_bind()).get_columns(table)}
         assert {"id", "created_at", "updated_at"} <= columns
+
+
+def test_publish_kind_columns_initialize(db):
+    note_columns = {column["name"] for column in inspect(db.get_bind()).get_columns("notes")}
+    assert {"publish_kind", "text_to_image_prompt", "text_to_image_style", "video_file_path"} <= note_columns
+    media_columns = {column["name"] for column in inspect(db.get_bind()).get_columns("media_assets")}
+    assert {"asset_type", "file_path", "mime_type", "upload_order", "status"} <= media_columns

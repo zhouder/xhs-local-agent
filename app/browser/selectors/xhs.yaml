@@ -1,85 +1,86 @@
 publish:
   # Keep all XHS selectors centralized. Each key supports ordered fallback candidates.
-  page_ready:
-    - 'text=上传视频'
-    - 'text=上传图文'
-    - 'text=写长文'
-    - '[role="tab"]:has-text("上传视频")'
-    - '[role="tab"]:has-text("上传图文")'
-    - '[role="tab"]:has-text("写长文")'
+  common:
+    title:
+      - 'input[placeholder*="标题"]'
+      - 'textarea[placeholder*="标题"]'
+      - '[contenteditable="true"][data-placeholder*="标题"]'
+      - 'input[placeholder*="填写标题"]'
+    body:
+      - '[contenteditable="true"][data-placeholder*="正文"]'
+      - 'textarea[placeholder*="正文"]'
+      - '[data-placeholder*="正文"]'
+      - '[contenteditable="true"]'
+    topic_input:
+      - 'input[placeholder*="话题"]'
+      - 'input[placeholder*="#"]'
+      - 'textarea[placeholder*="话题"]'
+    submit_button:
+      - 'button:has-text("发布")'
+      - 'button:has-text("立即发布")'
+      - '[role="button"]:has-text("发布")'
 
-  image_page_ready:
-    - 'input[type="file"]'
-    - 'text=上传图文'
-    - 'button:has-text("上传图片")'
-    - 'text=选择图片'
-    - '[class*="upload"]'
+  video_upload:
+    page_ready:
+      - 'text=上传视频'
+      - 'button:has-text("上传视频")'
+      - '[class*="upload"]'
+    file_input:
+      - 'input[type="file"]'
+    upload_area:
+      - 'button:has-text("上传视频")'
+      - 'text=拖拽视频到此处或点击上传'
+      - 'text=点击上传视频'
+      - '[class*="upload"]'
+    uploaded_ready:
+      - 'text=重新上传'
+      - 'text=视频封面'
+      - '[class*="preview"]'
+      - '[class*="video"]'
 
-  article_page_ready:
-    - 'text=写长文'
-    - 'input[placeholder*="标题"]'
-    - 'textarea[placeholder*="标题"]'
-    - '[contenteditable="true"]'
+  image_upload:
+    page_ready:
+      - 'text=上传图片'
+      - 'text=上传图文'
+      - 'text=图片配图'
+      - '[class*="upload"]'
+    file_input:
+      - 'input[type="file"]'
+    upload_area:
+      - 'button:has-text("上传图片")'
+      - 'text=拖拽图片到此处或点击上传'
+      - 'text=上传图片'
+      - '[class*="upload"]'
+    uploaded_ready:
+      - '[class*="preview"]'
+      - 'text=重新上传'
+      - 'text=图片'
+      - 'text=添加图片'
 
-  video_page_ready:
-    - 'text=上传视频'
-    - 'button:has-text("上传视频")'
-    - '[class*="upload"]'
-
-  image_upload_area:
-    - 'input[type="file"]'
-    - 'button:has-text("上传图片")'
-    - 'text=拖拽图片到此处或点击上传'
-    - '[class*="upload"]'
-
-  tab_upload_video:
-    - 'text=上传视频'
-    - 'button:has-text("上传视频")'
-    - '[role="tab"]:has-text("上传视频")'
-
-  tab_upload_image:
-    - 'text=上传图文'
-    - 'button:has-text("上传图文")'
-    - '[role="tab"]:has-text("上传图文")'
-
-  tab_long_text:
-    - 'text=写长文'
-    - 'button:has-text("写长文")'
-    - '[role="tab"]:has-text("写长文")'
-
-  active_tab_upload_video:
-    - '[class*="active"]:has-text("上传视频")'
-    - '[aria-selected="true"]:has-text("上传视频")'
-
-  active_tab_upload_image:
-    - '[class*="active"]:has-text("上传图文")'
-    - '[aria-selected="true"]:has-text("上传图文")'
-
-  active_tab_long_text:
-    - '[class*="active"]:has-text("写长文")'
-    - '[aria-selected="true"]:has-text("写长文")'
-
-  title:
-    - 'input[placeholder*="标题"]'
-    - 'textarea[placeholder*="标题"]'
-    - '[contenteditable="true"][data-placeholder*="标题"]'
-    - 'input[placeholder*="填写标题"]'
-
-  body:
-    - '[contenteditable="true"][data-placeholder*="正文"]'
-    - 'textarea[placeholder*="正文"]'
-    - '[data-placeholder*="正文"]'
-    - '[contenteditable="true"]'
-
-  file_input:
-    - 'input[type="file"]'
-
-  topic_input:
-    - 'input[placeholder*="话题"]'
-    - 'input[placeholder*="#"]'
-    - 'textarea[placeholder*="话题"]'
-
-  submit_button:
-    - 'button:has-text("发布")'
-    - 'button:has-text("立即发布")'
-    - '[role="button"]:has-text("发布")'
+  image_text_to_image:
+    entry:
+      - 'text=写文字生成图片'
+      - 'button:has-text("写文字生成图片")'
+      - 'text=文字生成图片'
+      - 'text=图片配图'
+    prompt_input:
+      - 'textarea[placeholder*="输入"]'
+      - '[data-placeholder*="输入"]'
+      - 'textarea'
+      - '[contenteditable="true"]'
+    generate_button:
+      - 'button:has-text("立即生成")'
+      - 'button:has-text("开始生成")'
+      - 'button:has-text("生成")'
+    template_option:
+      - '[class*="template"]'
+      - '[class*="style"]'
+      - '[class*="card"]'
+    next_button:
+      - 'button:has-text("下一步")'
+      - 'button:has-text("使用")'
+      - 'button:has-text("确定")'
+    generated_ready:
+      - 'text=下一步'
+      - '[class*="template"]'
+      - '[class*="style"]'

@@ -140,9 +140,15 @@ class OpenAICompatibleProvider(AIProviderAdapter):
             "不得生成互关、刷量、私信领取、评论区口令等平台违规互动话术。"
             "争议性标题仅可做理性观点讨论，不得制造对立、恐慌或误导。"
         )
+        media_plan_instruction = {
+            "video_upload": "生成 title、body、hashtags、cover_prompt，并把 video_script、video_shot_list、video_caption_suggestions 合并写入 media_requirements.description；明确用户需上传本地视频文件。",
+            "image_upload": "生成 title、body、hashtags、cover_prompt，并把 image_plan 中每张图用途、构图、画面文字、风格合并写入 media_requirements.description。",
+            "image_text_to_image": "生成 title、body、hashtags、cover_prompt，并把 xhs_text_to_image_prompt、suggested_image_text、style_keywords 合并写入 media_requirements.description。",
+        }.get(request.publish_kind, "")
         user = json.dumps({
-            "task": "生成小红书图文笔记",
+            "task": "按 publish_kind 生成小红书笔记",
             "parameters": request.model_dump(),
+            "media_plan_instruction": media_plan_instruction,
             "schema": NoteContent.model_json_schema(),
         }, ensure_ascii=False)
         return self._structured_completion(system, user, NoteContent, lambda note: validate_note_content(note, request))

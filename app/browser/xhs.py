@@ -18,16 +18,25 @@ from app.config import ROOT, Settings
 from app.database import utcnow
 from app.models import BrowserError, NoteStatus, Setting
 from app.repositories import AuditRepository, NoteRepository
-from app.services.materials import validate_image_assets
+from app.services.materials import validate_image_assets, validate_video_asset
 from app.services.notifications import Notifier
 from app.services.policy import PolicyEngine
+from app.services.publish_kinds import (
+    PUBLISH_KIND_IMAGE_TEXT_TO_IMAGE,
+    PUBLISH_KIND_IMAGE_UPLOAD,
+    PUBLISH_KIND_VIDEO_UPLOAD,
+    PUBLISH_KINDS,
+    normalize_publish_kind,
+    publish_kind_label,
+    publish_target_for_kind,
+)
 from app.services.state_machine import transition_note
 
 
 PUBLISH_MODES = {"dry_run", "fill_only", "publish_after_final_confirm"}
 PREVIEW_SIZE = (1080, 1440)
 VIDEO_SUFFIXES = {".mp4", ".mov", ".avi", ".mkv", ".webm"}
-PUBLISH_TARGETS = {"video", "image", "article"}
+PUBLISH_TARGETS = {"video", "image"}
 
 
 @dataclass
@@ -57,17 +66,15 @@ class XHSBrowser:
         if mode not in PUBLISH_MODES:
             raise ValueError(f"Unsupported publish mode: {mode}")
         note = self._approved_note(note_id)
-        assets = self.notes.media_paths(note.id)
-        if any(Path(path).suffix.casefold() in VIDEO_SUFFIXES for path in assets):
-            raise ValueError("视频发布暂未实现。")
-        ok, reason = validate_image_assets(assets)
-        if not ok:
-            self.audit.record("browser.fill_publish", "blocked", target_type="note", target_id=note_id, error_message=reason, metadata={"mode": mode})
-            raise ValueError(reason)
+        publish_kind = resolve_note_publish_kind(note)
+        image_assets = self.notes.media_paths_by_type(note.id, "image")
+        video_assets = self.notes.media_paths_by_type(note.id, "video")
+        assets = video_assets if publish_kind == PUBLISH_KIND_VIDEO_UPLOAD else image_assets
+        self._validate_publish_assets(note.id, publish_kind, image_assets, video_assets, mode)
         if mode == "dry_run":
             screenshot, preview_html = self._dry_run_preview(note, assets)
         else:
-            screenshot, preview_html = await self._run_browser_fill_async(note, assets, mode=mode, click_publish=False), ""
+            screenshot, preview_html = await self._run_browser_fill_async(note, image_assets=image_assets, video_assets=video_assets, mode=mode, click_publish=False), ""
         transition_note(note, NoteStatus.PUBLISHING)
         transition_note(note, NoteStatus.WAITING_FINAL_CONFIRM)
         note.publish_mode = mode
@@ -75,7 +82,7 @@ class XHSBrowser:
         note.publish_preview_html_path = preview_html
         note.publish_error_message = "dry_run_preview: 本地模拟预览，未打开小红书，未上传素材，未发布。" if mode == "dry_run" else ""
         self.db.commit()
-        self.audit.record("browser.fill_publish", "success", target_type="note", target_id=note.id, screenshot_path=screenshot, metadata={"mode": mode, "asset_count": len(assets), "preview_html": preview_html})
+        self.audit.record("browser.fill_publish", "success", target_type="note", target_id=note.id, screenshot_path=screenshot, metadata={"mode": mode, "publish_kind": publish_kind, "asset_count": len(assets), "preview_html": preview_html})
         self._notify("Publish page filled", f"note_id={note.id}; status={note.status}; review screenshot ready.", note.id)
         return screenshot
 
@@ -97,14 +104,11 @@ class XHSBrowser:
         if note.publish_mode == "dry_run":
             self.audit.record("browser.final_confirm", "blocked", target_type="note", target_id=note_id, output_summary="dry_run_preview")
             raise PermissionError("dry_run 是本地模拟预览，不能用于最终发布。请先使用 fill_only 或 publish_after_final_confirm。")
-        assets = self.notes.media_paths(note.id)
-        if any(Path(path).suffix.casefold() in VIDEO_SUFFIXES for path in assets):
-            raise ValueError("视频发布暂未实现。")
-        ok, reason = validate_image_assets(assets)
-        if not ok:
-            self.audit.record("browser.final_confirm", "blocked", target_type="note", target_id=note_id, error_message=reason)
-            raise ValueError(reason)
-        screenshot = await self._run_browser_fill_async(note, assets, mode=note.publish_mode or "publish_after_final_confirm", click_publish=True)
+        publish_kind = resolve_note_publish_kind(note)
+        image_assets = self.notes.media_paths_by_type(note.id, "image")
+        video_assets = self.notes.media_paths_by_type(note.id, "video")
+        self._validate_publish_assets(note.id, publish_kind, image_assets, video_assets, note.publish_mode or "publish_after_final_confirm", action_type="browser.final_confirm")
+        screenshot = await self._run_browser_fill_async(note, image_assets=image_assets, video_assets=video_assets, mode=note.publish_mode or "publish_after_final_confirm", click_publish=True)
         transition_note(note, NoteStatus.PUBLISH_UNCERTAIN)
         note.publish_screenshot_path = screenshot
         note.publish_error_message = "Publish button clicked; please verify manually in XHS."
@@ -127,6 +131,17 @@ class XHSBrowser:
             raise ValueError("发布前至少需要 3 个话题。")
         return note
 
+    def _validate_publish_assets(self, note_id: int, publish_kind: str, image_assets: list[str], video_assets: list[str], mode: str, *, action_type: str = "browser.fill_publish") -> None:
+        if publish_kind == PUBLISH_KIND_VIDEO_UPLOAD:
+            ok, reason = validate_video_asset(video_assets[0] if video_assets else "")
+        elif publish_kind == PUBLISH_KIND_IMAGE_UPLOAD:
+            ok, reason = validate_image_assets(image_assets)
+        else:
+            ok, reason = True, ""
+        if not ok:
+            self.audit.record(action_type, "blocked", target_type="note", target_id=note_id, error_message=reason, metadata={"mode": mode, "publish_kind": publish_kind})
+            raise ValueError(reason)
+
     def _dry_run_preview(self, note, assets: list[str]) -> tuple[str, str]:
         directory = ROOT / self.settings.browser["screenshots_dir"]
         directory.mkdir(parents=True, exist_ok=True)
@@ -139,7 +154,7 @@ class XHSBrowser:
         self.audit.record("browser.dry_run_preview", "success", target_type="note", target_id=note.id, screenshot_path=str(png_path), metadata={"html_preview": str(html_path), "asset_count": len(assets)})
         return str(png_path), str(html_path)
 
-    async def _run_browser_fill_async(self, note, assets: list[str], *, mode: str, click_publish: bool) -> str:
+    async def _run_browser_fill_async(self, note, *, image_assets: list[str], video_assets: list[str], mode: str, click_publish: bool) -> str:
         screenshot = ""
         page = None
         browser = None
@@ -147,7 +162,8 @@ class XHSBrowser:
         playwright = None
         step = "launch"
         selector_name = ""
-        requested_target = "image" if assets else "article"
+        publish_kind = resolve_note_publish_kind(note)
+        requested_target = publish_target_for_kind(publish_kind)
         actual_target = "unknown"
         current_tab = ""
         keep_open = bool(self.settings.browser.get("keep_open_on_error", True))
@@ -174,51 +190,25 @@ class XHSBrowser:
                 context = await browser.new_context()
                 page = await context.new_page()
 
-            publish_url = resolve_publish_url(self.settings, requested_target)
+            publish_url = resolve_publish_url(self.settings, publish_kind)
             step = "open_publish_target_url"
             await page.goto(publish_url)
-            await self._wait_for_login_and_target_page_async(page, requested_target, publish_url)
+            await self._wait_for_login_and_target_page_async(page, requested_target, publish_url, publish_kind)
             actual_target = detect_publish_target_from_url(getattr(page, "url", "") or "")
-            if actual_target == "video" and requested_target != "video":
-                message = f"\u8bf7\u6c42{publish_target_label(requested_target)}\u53d1\u5e03\u9875 target={requested_target}\uff0c\u4f46\u5f53\u524d\u9875\u9762\u662f target=video\u3002\u8bf7\u68c0\u67e5\u5c0f\u7ea2\u4e66\u8df3\u8f6c\u6216 publish_urls \u914d\u7f6e\u3002"
+            if actual_target in PUBLISH_TARGETS and actual_target != requested_target:
+                message = f"请求{publish_target_label(requested_target)}发布页 target={requested_target}，但当前页面是 target={actual_target}。请检查小红书跳转或 publish_urls 配置。"
                 await self._record_browser_failure_async(note, mode, click_publish, step, selector_name, message, screenshot, page, current_tab, requested_target, actual_target)
                 raise RuntimeError(message)
 
-            hashtags = " ".join(f"#{tag}" for tag in json.loads(note.hashtags_json))
-            if requested_target == "image":
-                step, selector_name = "wait_image_upload", "image_upload_area"
-                await async_wait_image_editor_ready(page, self.selectors, require_title_body=False)
-                step, selector_name = "upload_assets", "file_input"
-                file_input = await async_find_first_visible(page, self.selectors.get("file_input", self.selectors.get("image_upload_area", [])), timeout=30_000)
-                await file_input.locator.set_input_files(assets)
-                await page.wait_for_timeout(2500)
-                step, selector_name = "wait_image_title_body", "title"
-                await async_wait_image_editor_ready(page, self.selectors, require_title_body=True)
-            else:
-                step, selector_name = "wait_article_editor", "title"
-                await async_wait_article_editor_ready(page, self.selectors)
-
-            step, selector_name = "fill_title", "title"
-            title = await async_find_first_visible(page, self.selectors["title"], timeout=60_000)
-            await title.locator.fill(note.title)
-            step, selector_name = "fill_body", "body"
-            body = await async_find_first_visible(page, self.selectors["body"], timeout=60_000)
-            await body.locator.fill(f"{note.body}\n{hashtags}".strip())
-            if self.selectors.get("topic_input"):
-                with suppress(Exception):
-                    step, selector_name = "fill_topics", "topic_input"
-                    topic = await async_find_first_visible(page, self.selectors["topic_input"], timeout=5_000)
-                    await topic.locator.fill(hashtags)
-
-            await page.wait_for_timeout(1500)
-            screenshot = await self._screenshot_async(page, note.id, "published-clicked" if click_publish else mode)
-            if click_publish:
-                step, selector_name = "click_publish", "submit_button"
-                submit = await async_find_first_visible(page, self.selectors["submit_button"], timeout=30_000)
-                await submit.locator.click()
-                await page.wait_for_timeout(3000)
-                screenshot = await self._screenshot_async(page, note.id, "publish-uncertain")
+            step, selector_name = f"fill_{publish_kind}", publish_kind
+            screenshot = await self.async_fill_note(page, note, publish_kind, image_assets, video_assets, mode=mode, click_publish=click_publish)
             return screenshot
+        except SelectorStepError as exc:
+            failed = True
+            step, selector_name = exc.step, exc.selector_name
+            message = exc.message
+            await self._record_browser_failure_async(note, mode, click_publish, step, selector_name, message, screenshot, page, current_tab, requested_target, actual_target)
+            raise RuntimeError(message) from None
         except PlaywrightClosedByUser as exc:
             failed = True
             await self._record_browser_failure_async(note, mode, click_publish, step, selector_name, str(exc), screenshot, page, current_tab, requested_target, actual_target)
@@ -226,13 +216,13 @@ class XHSBrowser:
         except PlaywrightTimeoutError:
             failed = True
             actual_target = detect_publish_target_from_url(getattr(page, "url", "") or "") if page is not None else actual_target
-            if actual_target == "video" and requested_target != "video":
-                message = f"\u8bf7\u6c42{publish_target_label(requested_target)}\u53d1\u5e03\u9875 target={requested_target}\uff0c\u4f46\u5f53\u524d\u9875\u9762\u662f target=video\u3002\u8bf7\u68c0\u67e5\u5c0f\u7ea2\u4e66\u8df3\u8f6c\u6216 publish_urls \u914d\u7f6e\u3002"
+            if actual_target in PUBLISH_TARGETS and actual_target != requested_target:
+                message = f"请求{publish_target_label(requested_target)}发布页 target={requested_target}，但当前页面是 target={actual_target}。请检查小红书跳转或 publish_urls 配置。"
             elif step.startswith("wait_"):
-                message = f"\u5df2\u8fdb\u5165{publish_target_label(requested_target)}\u53d1\u5e03\u9875\uff0c\u4f46\u6ca1\u6709\u627e\u5230\u53d1\u5e03\u9875\u7f16\u8f91\u5668\u3002\u8bf7\u8fd0\u884c\u9009\u62e9\u5668\u8bca\u65ad\u811a\u672c\u6216\u68c0\u67e5\u5c0f\u7ea2\u4e66\u9875\u9762\u662f\u5426\u6539\u7248\u3002"
+                message = f"已进入{publish_target_label(requested_target)}发布页，但没有找到{publish_kind_label(publish_kind)}需要的编辑器。请运行选择器诊断脚本或检查小红书页面是否改版。"
             else:
-                candidates = self.selectors.get(selector_name or "title", [])
-                message = f"\u6ca1\u6709\u627e\u5230\u53d1\u5e03\u9875\u7f16\u8f91\u5668\u3002\u5f53\u524d\u6b65\u9aa4\uff1a{step}\uff1b\u9009\u62e9\u5668\u5019\u9009\uff1a{selector_list(candidates)}"
+                candidates = selector_candidates(self.selectors, publish_kind, selector_name or "title")
+                message = f"没有找到发布页编辑器。当前步骤：{step}；选择器候选：{selector_list(candidates)}"
             await self._record_browser_failure_async(note, mode, click_publish, step, selector_name or "title", message, screenshot, page, current_tab, requested_target, actual_target)
             raise RuntimeError(message) from None
         except Exception as exc:
@@ -252,7 +242,83 @@ class XHSBrowser:
                 with suppress(Exception):
                     await playwright.stop()
 
-    async def _wait_for_login_and_target_page_async(self, page, requested_target: str, publish_url: str) -> None:
+    async def async_fill_note(self, page, note, publish_kind: str, image_assets: list[str], video_assets: list[str], *, mode: str, click_publish: bool) -> str:
+        if publish_kind == PUBLISH_KIND_VIDEO_UPLOAD:
+            return await self.async_fill_video_upload_note(page, note, video_assets, mode=mode, click_publish=click_publish)
+        if publish_kind == PUBLISH_KIND_IMAGE_UPLOAD:
+            return await self.async_fill_image_upload_note(page, note, image_assets, mode=mode, click_publish=click_publish)
+        if publish_kind == PUBLISH_KIND_IMAGE_TEXT_TO_IMAGE:
+            return await self.async_fill_image_text_to_image_note(page, note, mode=mode, click_publish=click_publish)
+        raise ValueError(f"Unsupported publish_kind: {publish_kind}")
+
+    async def async_fill_video_upload_note(self, page, note, video_assets: list[str], *, mode: str, click_publish: bool) -> str:
+        if not video_assets:
+            raise SelectorStepError("validate_video", "file_input", "视频笔记需要先添加一个 mp4/mov 视频文件。")
+        selectors = selector_group(self.selectors, PUBLISH_KIND_VIDEO_UPLOAD)
+        await async_find_first_visible(page, selectors.get("page_ready", []), timeout=60_000)
+        await async_upload_files(page, selectors, video_assets, "file_input", "upload_area")
+        await async_wait_uploaded_or_editor_ready(page, selectors, timeout=90_000)
+        await self._fill_common_fields(page, note, PUBLISH_KIND_VIDEO_UPLOAD)
+        return await self._finish_fill(page, note, mode=mode, click_publish=click_publish)
+
+    async def async_fill_image_upload_note(self, page, note, image_assets: list[str], *, mode: str, click_publish: bool) -> str:
+        if not image_assets:
+            raise SelectorStepError("validate_images", "file_input", "图文笔记需要先添加 1-9 张图片，或切换为文字生图。")
+        selectors = selector_group(self.selectors, PUBLISH_KIND_IMAGE_UPLOAD)
+        await async_find_first_visible(page, selectors.get("page_ready", []), timeout=60_000)
+        await async_upload_files(page, selectors, image_assets, "file_input", "upload_area")
+        await async_wait_uploaded_or_editor_ready(page, selectors, timeout=90_000)
+        await self._fill_common_fields(page, note, PUBLISH_KIND_IMAGE_UPLOAD)
+        return await self._finish_fill(page, note, mode=mode, click_publish=click_publish)
+
+    async def async_fill_image_text_to_image_note(self, page, note, *, mode: str, click_publish: bool) -> str:
+        selectors = selector_group(self.selectors, PUBLISH_KIND_IMAGE_TEXT_TO_IMAGE)
+        await async_find_first_visible(page, selector_candidates(self.selectors, PUBLISH_KIND_IMAGE_UPLOAD, "page_ready"), timeout=60_000)
+        try:
+            entry = await async_find_first_visible(page, selectors.get("entry", []), timeout=30_000)
+        except Exception as exc:
+            candidates = selector_list(selectors.get("entry", []))
+            raise SelectorStepError("open_text_to_image", "entry", f"没有找到小红书【写文字生成图片】入口；选择器候选：{candidates}") from exc
+        await entry.locator.click()
+        prompt = (getattr(note, "text_to_image_prompt", "") or note.cover_prompt or note.title).strip()
+        prompt_hit = await async_find_first_visible(page, selectors.get("prompt_input", []), timeout=30_000)
+        await prompt_hit.locator.fill(prompt)
+        generate = await async_find_first_visible(page, selectors.get("generate_button", []), timeout=30_000)
+        await generate.locator.click()
+        await async_find_first_visible(page, selectors.get("generated_ready", selectors.get("template_option", [])), timeout=120_000)
+        with suppress(Exception):
+            template = await async_find_first_visible(page, selectors.get("template_option", []), timeout=10_000)
+            await template.locator.click()
+        next_button = await async_find_first_visible(page, selectors.get("next_button", []), timeout=30_000)
+        await next_button.locator.click()
+        await async_find_first_visible(page, selector_candidates(self.selectors, PUBLISH_KIND_IMAGE_UPLOAD, "title"), timeout=60_000)
+        await self._fill_common_fields(page, note, PUBLISH_KIND_IMAGE_TEXT_TO_IMAGE)
+        return await self._finish_fill(page, note, mode=mode, click_publish=click_publish)
+
+    async def _fill_common_fields(self, page, note, publish_kind: str) -> None:
+        selectors = selector_group(self.selectors, publish_kind)
+        hashtags = " ".join(f"#{tag}" for tag in json.loads(note.hashtags_json))
+        title = await async_find_first_visible(page, selectors["title"], timeout=60_000)
+        await title.locator.fill(note.title)
+        body = await async_find_first_visible(page, selectors["body"], timeout=60_000)
+        await body.locator.fill(f"{note.body}\n{hashtags}".strip())
+        if selectors.get("topic_input"):
+            with suppress(Exception):
+                topic = await async_find_first_visible(page, selectors["topic_input"], timeout=5_000)
+                await topic.locator.fill(hashtags)
+
+    async def _finish_fill(self, page, note, *, mode: str, click_publish: bool) -> str:
+        await page.wait_for_timeout(1500)
+        screenshot = await self._screenshot_async(page, note.id, "published-clicked" if click_publish else mode)
+        if click_publish:
+            selectors = selector_group(self.selectors, resolve_note_publish_kind(note))
+            submit = await async_find_first_visible(page, selectors["submit_button"], timeout=30_000)
+            await submit.locator.click()
+            await page.wait_for_timeout(3000)
+            screenshot = await self._screenshot_async(page, note.id, "publish-uncertain")
+        return screenshot
+
+    async def _wait_for_login_and_target_page_async(self, page, requested_target: str, publish_url: str, publish_kind: str) -> None:
         print("\u8bf7\u5728\u6253\u5f00\u7684 Chrome \u4e2d\u626b\u7801\u767b\u5f55\u5c0f\u7ea2\u4e66\u3002\u672c\u7a0b\u5e8f\u4e0d\u4f1a\u8bfb\u53d6\u3001\u5bfc\u51fa\u6216\u4fdd\u5b58 cookie\u3002")
         deadline = datetime.now().timestamp() + 180
         navigated_after_login = False
@@ -268,10 +334,12 @@ class XHSBrowser:
                     await page.goto(publish_url)
                     navigated_after_login = True
             try:
-                if requested_target == "image":
+                if publish_kind == PUBLISH_KIND_VIDEO_UPLOAD:
+                    await async_find_first_visible(page, selector_candidates(self.selectors, publish_kind, "page_ready"), timeout=5_000)
+                elif requested_target == "image":
                     await async_wait_image_editor_ready(page, self.selectors, require_title_body=False, timeout=5_000)
                 else:
-                    await async_wait_article_editor_ready(page, self.selectors, timeout=5_000)
+                    await async_find_first_visible(page, selector_candidates(self.selectors, publish_kind, "page_ready"), timeout=5_000)
                 return
             except Exception as exc:
                 last_error = exc
@@ -324,7 +392,7 @@ class XHSBrowser:
             "requested_target": requested_target,
             "actual_target": actual_target,
             "step": step,
-            "selector_candidates": self.selectors.get(selector_name, []),
+            "selector_candidates": selector_candidates(self.selectors, requested_target if requested_target in PUBLISH_KINDS else "", selector_name),
             "screenshot_path": screenshot,
             "keep_open_on_error": bool(self.settings.browser.get("keep_open_on_error", True)),
         }
@@ -396,6 +464,14 @@ class PlaywrightClosedByUser(RuntimeError):
     pass
 
 
+class SelectorStepError(RuntimeError):
+    def __init__(self, step: str, selector_name: str, message: str):
+        super().__init__(message)
+        self.step = step
+        self.selector_name = selector_name
+        self.message = message
+
+
 def _event_loop_is_running() -> bool:
     try:
         asyncio.get_running_loop()
@@ -405,8 +481,12 @@ def _event_loop_is_running() -> bool:
 
 
 
-def resolve_publish_url(settings: Settings, publish_content_type: str) -> str:
-    target = publish_content_type if publish_content_type in PUBLISH_TARGETS else "image"
+def resolve_note_publish_kind(note) -> str:
+    return normalize_publish_kind(getattr(note, "publish_kind", None))
+
+
+def resolve_publish_url(settings: Settings, publish_kind: str) -> str:
+    target = publish_target_for_kind(publish_kind)
     urls = settings.browser.get("publish_urls", {}) or {}
     url = urls.get(target)
     if url:
@@ -426,7 +506,22 @@ def detect_publish_target_from_url(url: str) -> str:
 
 
 def publish_target_label(target: str) -> str:
-    return {"image": "??", "article": "??", "video": "??"}.get(target, "??")
+    return {"image": "图文", "video": "视频"}.get(target, "未知")
+
+
+def selector_group(selectors: dict, publish_kind: str) -> dict:
+    if "common" not in selectors:
+        return selectors
+    common = selectors.get("common", {}) or {}
+    specific = selectors.get(normalize_publish_kind(publish_kind), {}) or {}
+    return {**common, **specific}
+
+
+def selector_candidates(selectors: dict, publish_kind: str, key: str):
+    group = selector_group(selectors, publish_kind)
+    if key in group:
+        return group.get(key, [])
+    return selectors.get(key, [])
 
 def selector_list(selector_candidates) -> list[str]:
     if isinstance(selector_candidates, str):
@@ -458,14 +553,58 @@ async def async_find_first_visible(page, selector_candidates, timeout: int = 30_
     raise PlaywrightTimeoutError(f"No visible selector found from candidates: {candidates}") from last_error
 
 
+async def async_find_first_locator(page, selector_candidates, timeout: int = 30_000) -> SelectorHit:
+    candidates = selector_list(selector_candidates)
+    last_error: Exception | None = None
+    deadline = datetime.now().timestamp() + (timeout / 1000)
+    while datetime.now().timestamp() < deadline:
+        for selector in candidates:
+            try:
+                locator = page.locator(selector)
+                count = await locator.count() if hasattr(locator, "count") else 1
+                if count:
+                    if hasattr(locator, "first"):
+                        locator = locator.first
+                    return SelectorHit(locator=locator, selector=selector)
+            except Exception as exc:
+                last_error = exc
+        with suppress(Exception):
+            await page.wait_for_timeout(250)
+    raise PlaywrightTimeoutError(f"No selector found from candidates: {candidates}") from last_error
+
+
+async def async_upload_files(page, selectors: dict, paths: list[str], file_input_key: str, upload_area_key: str) -> None:
+    try:
+        file_input = await async_find_first_locator(page, selectors.get(file_input_key, []), timeout=15_000)
+        await file_input.locator.set_input_files(paths)
+        return
+    except Exception as first_error:
+        try:
+            upload_area = await async_find_first_visible(page, selectors.get(upload_area_key, []), timeout=15_000)
+            if hasattr(page, "expect_file_chooser"):
+                async with page.expect_file_chooser() as chooser_info:
+                    await upload_area.locator.click()
+                chooser = await chooser_info.value
+                await chooser.set_files(paths)
+            else:
+                await upload_area.locator.click()
+                raise first_error
+        except Exception as fallback_error:
+            raise PlaywrightTimeoutError(f"上传文件失败；file input 候选：{selector_list(selectors.get(file_input_key, []))}；upload area 候选：{selector_list(selectors.get(upload_area_key, []))}") from fallback_error
+
+
+async def async_wait_uploaded_or_editor_ready(page, selectors: dict, timeout: int = 90_000) -> None:
+    candidates = selector_list(selectors.get("uploaded_ready", [])) + selector_list(selectors.get("title", [])) + selector_list(selectors.get("body", []))
+    await async_find_first_visible(page, candidates, timeout=timeout)
+
+
 async def async_wait_publish_page_ready(page, selectors: dict, timeout: int = 30_000) -> SelectorHit:
-    return await async_find_first_visible(page, selectors.get("page_ready", []), timeout=timeout)
+    return await async_find_first_visible(page, selector_candidates(selectors, PUBLISH_KIND_IMAGE_UPLOAD, "page_ready"), timeout=timeout)
 
 
 async def async_detect_active_publish_tab(page, selectors: dict) -> str:
     checks = [
         ("upload_image", selectors.get("active_tab_upload_image", [])),
-        ("long_text", selectors.get("active_tab_long_text", [])),
         ("upload_video", selectors.get("active_tab_upload_video", selectors.get("tab_upload_video", []))),
     ]
     for name, candidates in checks:
@@ -476,49 +615,13 @@ async def async_detect_active_publish_tab(page, selectors: dict) -> str:
     return "unknown"
 
 
-async def async_choose_publish_tab(page, selectors: dict, publish_content_type: str) -> str:
-    current = await async_detect_active_publish_tab(page, selectors)
-    if publish_content_type == "image":
-        if current == "upload_image":
-            return current
-        hit = await async_find_first_visible(page, selectors.get("tab_upload_image", []), timeout=30_000)
-        await hit.locator.click()
-        with suppress(Exception):
-            await async_find_first_visible(page, selectors.get("active_tab_upload_image", []), timeout=5_000)
-        return "upload_image"
-    if current == "long_text":
-        return current
-    try:
-        hit = await async_find_first_visible(page, selectors.get("tab_long_text", []), timeout=15_000)
-        await hit.locator.click()
-        with suppress(Exception):
-            await async_find_first_visible(page, selectors.get("active_tab_long_text", []), timeout=5_000)
-        return "long_text"
-    except Exception:
-        hit = await async_find_first_visible(page, selectors.get("tab_upload_image", []), timeout=15_000)
-        await hit.locator.click()
-        return "upload_image"
-
-
 async def async_wait_image_editor_ready(page, selectors: dict, require_title_body: bool = False, timeout: int = 30_000) -> None:
-    await async_find_first_visible(page, selectors.get("image_page_ready", selectors.get("image_upload_area", [])), timeout=timeout)
-    await async_find_first_visible(page, selectors.get("image_upload_area", selectors.get("file_input", [])), timeout=timeout)
+    group = selector_group(selectors, PUBLISH_KIND_IMAGE_UPLOAD)
+    await async_find_first_visible(page, group.get("page_ready", selectors.get("image_page_ready", group.get("upload_area", []))), timeout=timeout)
+    await async_find_first_visible(page, group.get("upload_area", selectors.get("image_upload_area", group.get("file_input", []))), timeout=timeout)
     if require_title_body:
-        await async_find_first_visible(page, selectors.get("title", []), timeout=60_000)
-        await async_find_first_visible(page, selectors.get("body", []), timeout=60_000)
-
-
-async def async_wait_article_editor_ready(page, selectors: dict, timeout: int = 30_000) -> None:
-    await async_find_first_visible(page, selectors.get("article_page_ready", selectors.get("title", [])), timeout=timeout)
-    await async_find_first_visible(page, selectors.get("title", []), timeout=60_000)
-    await async_find_first_visible(page, selectors.get("body", []), timeout=60_000)
-
-
-async def async_wait_editor_ready(page, selectors: dict, publish_content_type: str) -> None:
-    if publish_content_type in {"image", "upload_image"}:
-        await async_wait_image_editor_ready(page, selectors, require_title_body=True)
-    else:
-        await async_wait_article_editor_ready(page, selectors)
+        await async_find_first_visible(page, group.get("title", []), timeout=60_000)
+        await async_find_first_visible(page, group.get("body", []), timeout=60_000)
 
 
 def friendly_browser_error(exc: Exception) -> str:

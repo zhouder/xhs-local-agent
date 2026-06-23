@@ -175,16 +175,26 @@ def approved_note(db):
 
 
 def test_resolve_publish_url_uses_target_urls(settings):
-    assert "target=image" in resolve_publish_url(settings, "image")
-    assert "target=article" in resolve_publish_url(settings, "article")
-    assert "target=video" in resolve_publish_url(settings, "video")
+    assert "target=image" in resolve_publish_url(settings, "image_upload")
+    assert "target=image" in resolve_publish_url(settings, "image_text_to_image")
+    assert "target=video" in resolve_publish_url(settings, "video_upload")
+    assert "target=article" not in resolve_publish_url(settings, "image_text_to_image")
 
 
 def test_detect_publish_target_from_url():
     assert detect_publish_target_from_url("https://creator.xiaohongshu.com/publish/publish?from=menu&target=video") == "video"
     assert detect_publish_target_from_url("https://creator.xiaohongshu.com/publish/publish?from=menu&target=image") == "image"
-    assert detect_publish_target_from_url("https://creator.xiaohongshu.com/publish/publish?from=menu&target=article") == "article"
+    assert detect_publish_target_from_url("https://creator.xiaohongshu.com/publish/publish?from=menu&target=article") == "unknown"
     assert detect_publish_target_from_url("https://creator.xiaohongshu.com/publish/publish") == "unknown"
+
+
+def test_publish_kind_defaults_and_switches_with_materials(db, tmp_path):
+    note = approved_note(db)
+    assert note.publish_kind == "image_text_to_image"
+    image = tmp_path / "cover.png"
+    image.write_bytes(b"png")
+    MaterialService(db).set_note_assets(note.id, [str(image)])
+    assert note.publish_kind == "image_upload"
 
 
 def test_waiting_final_confirm_is_required_for_final_publish(db):
@@ -240,24 +250,40 @@ def test_dry_run_does_not_start_playwright_or_visit_xhs(db, settings, tmp_path, 
         assert image.size == (1080, 1440)
 
 
-def test_fill_only_without_assets_chooses_long_text_tab(db, settings, tmp_path, monkeypatch):
+def test_fill_only_without_assets_uses_text_to_image_not_article(db, settings, tmp_path, monkeypatch):
     note = approved_note(db)
     settings.browser["screenshots_dir"] = str(tmp_path)
     page = RecordingPage()
     monkeypatch.setattr(xhs_module, "async_playwright", lambda: FakePlaywright([page]))
     PublishService(db, settings, NullNotifier()).fill(note.id, mode="fill_only")
-    assert any("target=article" in url for url in page.goto_urls)
+    assert any("target=image" in url for url in page.goto_urls)
+    assert not any("target=article" in url for url in page.goto_urls)
     assert not any("target=video" in url for url in page.goto_urls)
     assert not any(op[0] == "set_input_files" for op in page.operations)
+    assert any("写文字生成图片" in selector or "文字生成图片" in selector for selector in page.clicked_selectors)
 
 
-def test_video_asset_is_blocked_before_publish(db, settings, tmp_path):
+def test_video_upload_uses_video_target_and_does_not_click_publish(db, settings, tmp_path, monkeypatch):
     note = approved_note(db)
+    note.publish_kind = "video_upload"
     video = tmp_path / "clip.mp4"
     video.write_bytes(b"video")
     db.add(MediaAsset(note_id=note.id, path=str(video), file_path=str(video), media_type="video", asset_type="video", upload_order=1, status="ready"))
     db.commit()
-    with pytest.raises(ValueError, match="视频发布暂未实现"):
+    settings.browser["screenshots_dir"] = str(tmp_path)
+    page = RecordingPage()
+    monkeypatch.setattr(xhs_module, "async_playwright", lambda: FakePlaywright([page]))
+    PublishService(db, settings, NullNotifier()).fill(note.id, mode="fill_only")
+    assert any("target=video" in url for url in page.goto_urls)
+    assert any(op[0] == "set_input_files" and op[2] == [str(video)] for op in page.operations)
+    assert not page.clicked
+
+
+def test_video_upload_without_video_is_blocked(db, settings):
+    note = approved_note(db)
+    note.publish_kind = "video_upload"
+    db.commit()
+    with pytest.raises(ValueError, match="视频笔记需要先添加一个 mp4/mov 视频文件"):
         PublishService(db, settings, NullNotifier()).fill(note.id, mode="fill_only")
 
 
@@ -329,14 +355,33 @@ def test_media_upload_reorder_delete_and_generated_cover(db, tmp_path):
 
 def test_note_detail_media_ui_auto_uploads_and_has_no_upload_button(db):
     note = approved_note(db)
+    note.publish_kind = "image_upload"
+    db.commit()
     with client_for(db) as client:
         response = client.get(f"/notes/{note.id}")
     main.app.dependency_overrides.clear()
     assert response.status_code == 200
     assert "添加图片" in response.text
     assert "uploadForm.submit()" in response.text
-    assert "上传图片" not in response.text
+    assert '<button class="primary">上传图片</button>' not in response.text
     assert "upload-dropzone" in response.text
+
+
+def test_note_detail_shows_video_and_text_to_image_modes(db):
+    note = approved_note(db)
+    note.publish_kind = "video_upload"
+    db.commit()
+    with client_for(db) as client:
+        response = client.get(f"/notes/{note.id}")
+    assert response.status_code == 200
+    assert "添加视频" in response.text
+    note.publish_kind = "image_text_to_image"
+    db.commit()
+    with client_for(db) as client:
+        response = client.get(f"/notes/{note.id}")
+    main.app.dependency_overrides.clear()
+    assert "文字生图" in response.text
+    assert "必须添加图片" not in response.text
 
 
 def test_uploaded_thumbnail_url_is_accessible(db, tmp_path):

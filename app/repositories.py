@@ -43,6 +43,9 @@ class NoteRepository:
             cover_prompt=content.cover_prompt,
             media_requirements_json=content.media_requirements.model_dump_json(),
             safety_json=content.safety.model_dump_json(),
+            publish_kind=getattr(request, "publish_kind", "image_text_to_image"),
+            text_to_image_prompt=getattr(content, "xhs_text_to_image_prompt", "") or content.cover_prompt,
+            text_to_image_style=getattr(content, "style_keywords", "") or request.style,
         )
         self.db.add(note)
         self.db.commit()
@@ -66,6 +69,14 @@ class NoteRepository:
 
     def media_paths(self, note_id: int) -> list[str]:
         rows = self.db.scalars(select(MediaAsset).where(MediaAsset.note_id == note_id).order_by(MediaAsset.upload_order, MediaAsset.id))
+        return [row.file_path or row.path for row in rows]
+
+    def media_paths_by_type(self, note_id: int, asset_type: str) -> list[str]:
+        rows = self.db.scalars(
+            select(MediaAsset)
+            .where(MediaAsset.note_id == note_id, MediaAsset.asset_type == asset_type)
+            .order_by(MediaAsset.upload_order, MediaAsset.id)
+        )
         return [row.file_path or row.path for row in rows]
 
     def media_assets(self, note_id: int) -> list[MediaAsset]:

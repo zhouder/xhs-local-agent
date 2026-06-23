@@ -42,6 +42,15 @@ def upload_media(note_id: int, files: list[UploadFile] = File(...), db: Session 
         return redirect_error(f"/notes/{note_id}", str(exc))
 
 
+@router.post("/notes/{note_id}/media/video/upload")
+def upload_video(note_id: int, file: UploadFile = File(...), db: Session = Depends(get_db)):
+    try:
+        MaterialService(db).upload_video(note_id, file)
+        return redirect(f"/notes/{note_id}", "视频已添加。")
+    except Exception as exc:
+        return redirect_error(f"/notes/{note_id}", str(exc))
+
+
 @router.post("/notes/{note_id}/media/reorder")
 def reorder_media(note_id: int, ordered_ids: str = Form(""), db: Session = Depends(get_db)):
     try:

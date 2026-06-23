@@ -17,7 +17,7 @@
     <div class="section-heading">
       <div>
         <h2>发布预览</h2>
-        <p class="muted">模式：{{ note.publish_mode }}</p>
+        <p class="muted">模式：{{ note.publish_mode }} · {{ publish_kind_label }}</p>
       </div>
       {% if note.publish_mode == 'dry_run' %}<span class="status danger-soft">dry_run</span>{% endif %}
     </div>
@@ -40,7 +40,8 @@
     <dl class="summary-list">
       <dt>标题</dt><dd>{{ note.title }}</dd>
       <dt>话题</dt><dd>{{ hashtags }}</dd>
-      <dt>素材</dt><dd>{% if media_paths %}{{ media_paths|length }} 张{% else %}无图片素材{% endif %}</dd>
+      <dt>发布类型</dt><dd>{{ publish_kind_label }}</dd>
+      <dt>素材</dt><dd>{{ material_summary }}</dd>
     </dl>
     <label>正文
       <textarea rows="10" readonly>{{ note.body }}</textarea>

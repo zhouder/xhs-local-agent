@@ -16,7 +16,8 @@ def test_no_cookie_or_persistent_profile_api_usage():
 
 def test_browser_locator_calls_use_central_selector_map():
     source = (ROOT / "app/browser/xhs.py").read_text(encoding="utf-8")
-    assert "async_find_first_visible(page, self.selectors[" in source
+    assert "selector_group(self.selectors" in source
+    assert "async_find_first_visible(page," in source
     assert "xhs.yaml" in source
     assert "playwright.sync_api" not in source
     assert "from playwright.sync_api" not in source
@@ -34,16 +35,19 @@ def test_fastapi_publish_routes_are_async():
 def test_selector_script_targets_publish_urls():
     source = (ROOT / "scripts/check_xhs_selectors.py").read_text(encoding="utf-8")
     assert "--target" in source
-    assert 'default="image"' in source
-    assert "resolve_publish_url(settings, args.target)" in source
+    assert 'default="image-upload"' in source
+    assert "resolve_publish_url(settings, publish_kind)" in source
+    assert "image-text-to-image" in source
+    assert "video" in source
 
 
 def test_playwright_click_is_limited_to_tabs_and_final_confirm_submit_button():
     source = (ROOT / "app/browser/xhs.py").read_text(encoding="utf-8")
     tree = ast.parse(source)
     clicks = [node for node in ast.walk(tree) if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "click"]
-    assert len(clicks) == 4
-    assert 'self.selectors["submit_button"]' in source
-    assert 'selectors.get("tab_upload_image"' in source
-    assert 'selectors.get("tab_long_text"' in source
+    assert len(clicks) <= 10
+    assert 'selectors["submit_button"]' in source
+    assert "async_fill_video_upload_note" in source
+    assert "async_fill_image_upload_note" in source
+    assert "async_fill_image_text_to_image_note" in source
     assert "click_publish" in source

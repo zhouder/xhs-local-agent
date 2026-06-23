@@ -12,19 +12,17 @@ from playwright.sync_api import TimeoutError as PlaywrightTimeoutError, sync_pla
 ROOT_DIR = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT_DIR))
 
-from app.browser.xhs import detect_publish_target_from_url, resolve_publish_url
+from app.browser.xhs import detect_publish_target_from_url, resolve_publish_url, selector_group
 from app.config import ROOT, get_settings
 
 
-REQUIRED = {
-    "image_page_ready",
-    "article_page_ready",
-    "video_page_ready",
-    "image_upload_area",
-    "title",
-    "body",
-    "file_input",
-    "submit_button",
+REQUIRED_GROUPS = {"common", "video_upload", "image_upload", "image_text_to_image"}
+TARGET_ALIASES = {
+    "video": "video_upload",
+    "image": "image_upload",
+    "image-upload": "image_upload",
+    "text2image": "image_text_to_image",
+    "image-text-to-image": "image_text_to_image",
 }
 
 
@@ -67,17 +65,24 @@ def print_selector_result(page, name: str, selectors: dict, *, required: bool = 
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--open-page", action="store_true", help="Open XHS publish page and check selectors without filling.")
-    parser.add_argument("--target", choices=["image", "article", "video"], default="image", help="Publish target URL to open when --open-page is used.")
+    parser.add_argument("--target", choices=sorted(TARGET_ALIASES), default="image-upload", help="Publish target URL to open when --open-page is used.")
     args = parser.parse_args()
+    publish_kind = TARGET_ALIASES[args.target]
     selector_path = ROOT / "app/browser/selectors/xhs.yaml"
     selectors = yaml.safe_load(selector_path.read_text(encoding="utf-8"))["publish"]
-    missing = sorted(REQUIRED - set(selectors))
+    missing = sorted(REQUIRED_GROUPS - set(selectors))
     if missing:
-        print("ERROR: missing selector keys: " + ", ".join(missing))
+        print("ERROR: missing selector groups: " + ", ".join(missing))
         return 1
     print("Selector file: OK")
-    for key in sorted(selectors):
-        print(f"{key}: {selector_list(selectors[key])}")
+    for group_name in sorted(selectors):
+        print(f"[{group_name}]")
+        value = selectors[group_name]
+        if isinstance(value, dict):
+            for key in sorted(value):
+                print(f"  {key}: {selector_list(value[key])}")
+        else:
+            print(f"  {selector_list(value)}")
     if not args.open_page:
         return 0
 
@@ -88,7 +93,7 @@ def main() -> int:
     screenshot_dir = ROOT / settings.browser.get("screenshots_dir", "data/screenshots")
     screenshot_dir.mkdir(parents=True, exist_ok=True)
     screenshot_path = screenshot_dir / f"selector-check-{args.target}-{datetime.now():%Y%m%d-%H%M%S}.png"
-    requested_url = resolve_publish_url(settings, args.target)
+    requested_url = resolve_publish_url(settings, publish_kind)
 
     try:
         with sync_playwright() as p:
@@ -105,6 +110,7 @@ def main() -> int:
                 page.wait_for_timeout(3000)
                 page.goto(requested_url)
             print(f"\nrequested target: {args.target}")
+            print(f"publish kind: {publish_kind}")
             print(f"requested URL: {requested_url}")
             print(f"actual URL: {page.url}")
             print(f"detected target: {detect_publish_target_from_url(page.url)}")
@@ -112,23 +118,26 @@ def main() -> int:
                 print(f"page title: {page.title()}")
 
             ok = True
-            if args.target == "image":
-                print("\n[image target]")
-                for name in ["image_page_ready", "image_upload_area", "file_input", "title", "body"]:
-                    ok = print_selector_result(page, name, selectors, required=name in {"image_page_ready", "image_upload_area", "file_input"}) and ok
-                ok = print_selector_result(page, "topic_input", selectors, required=False) and ok
-            elif args.target == "article":
-                print("\n[article target]")
-                for name in ["article_page_ready", "title", "body"]:
-                    ok = print_selector_result(page, name, selectors) and ok
-                ok = print_selector_result(page, "topic_input", selectors, required=False) and ok
+            group = selector_group(selectors, publish_kind)
+            if publish_kind == "video_upload":
+                print("\n[video_upload]")
+                for name in ["page_ready", "file_input", "upload_area"]:
+                    ok = print_selector_result(page, name, group, required=True) and ok
+            elif publish_kind == "image_upload":
+                print("\n[image_upload]")
+                for name in ["page_ready", "file_input", "upload_area"]:
+                    ok = print_selector_result(page, name, group, required=True) and ok
             else:
-                print("\n[video target]")
-                ok = print_selector_result(page, "video_page_ready", selectors) and ok
-
-            print("\n[tab diagnostics only]")
-            for name in ["tab_upload_video", "tab_upload_image", "tab_long_text"]:
-                print_selector_result(page, name, selectors, required=False)
+                print("\n[image_text_to_image]")
+                ok = print_selector_result(page, "entry", group, required=True) and ok
+                entry_index, entry_selector, entry_locator = first_visible(page, selector_list(group.get("entry", [])))
+                if entry_locator:
+                    try:
+                        entry_locator.click()
+                        page.wait_for_timeout(1000)
+                    except Exception as exc:
+                        print(f"  entry click skipped: {str(exc).splitlines()[0][:120]}")
+                ok = print_selector_result(page, "prompt_input", group, required=True) and ok
 
             page.screenshot(path=str(screenshot_path), full_page=True)
             print(f"\nDiagnostic screenshot: {screenshot_path}")

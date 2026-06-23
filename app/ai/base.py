@@ -15,6 +15,7 @@ def coerce_generation_request(
     controversial_title: bool = False,
     educational: bool = False,
     growth_oriented: bool = True,
+    publish_kind: str = "image_text_to_image",
 ) -> GenerateNoteRequest:
     if isinstance(topic, GenerateNoteRequest):
         return topic
@@ -23,6 +24,7 @@ def coerce_generation_request(
         min_length=min_length, max_length=max_length,
         controversial_title=controversial_title,
         educational=educational, growth_oriented=growth_oriented,
+        publish_kind=publish_kind,
     )
 
 

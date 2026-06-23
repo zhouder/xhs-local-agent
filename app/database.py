@@ -44,6 +44,10 @@ def init_db() -> None:
             "educational": "BOOLEAN NOT NULL DEFAULT 0",
             "growth_oriented": "BOOLEAN NOT NULL DEFAULT 1",
             "publish_mode": "VARCHAR(40) NOT NULL DEFAULT 'dry_run'",
+            "publish_kind": "VARCHAR(40) NOT NULL DEFAULT 'image_text_to_image'",
+            "text_to_image_prompt": "TEXT NOT NULL DEFAULT ''",
+            "text_to_image_style": "TEXT NOT NULL DEFAULT ''",
+            "video_file_path": "VARCHAR(1000) NOT NULL DEFAULT ''",
             "publish_screenshot_path": "VARCHAR(1000) NOT NULL DEFAULT ''",
             "publish_preview_html_path": "VARCHAR(1000) NOT NULL DEFAULT ''",
             "publish_error_message": "TEXT NOT NULL DEFAULT ''",
@@ -54,6 +58,17 @@ def init_db() -> None:
                 if name not in columns:
                     connection.execute(text(f"ALTER TABLE notes ADD COLUMN {name} {definition}"))
         _migrate_media_assets(engine)
+        with engine.begin() as connection:
+            connection.execute(text("""
+                UPDATE notes
+                SET publish_kind = 'image_upload'
+                WHERE EXISTS (
+                    SELECT 1 FROM media_assets
+                    WHERE media_assets.note_id = notes.id
+                      AND COALESCE(media_assets.asset_type, media_assets.media_type, 'image') IN ('image', 'generated_cover')
+                )
+                  AND (publish_kind IS NULL OR publish_kind = '' OR publish_kind = 'image_text_to_image')
+            """))
         _migrate_browser_errors(engine)
         _migrate_ai_providers(engine)
     from app.services.provider_registry import ProviderRegistry

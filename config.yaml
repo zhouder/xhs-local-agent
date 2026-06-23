@@ -19,7 +19,6 @@ browser:
   publish_urls:
     video: "https://creator.xiaohongshu.com/publish/publish?from=menu&target=video"
     image: "https://creator.xiaohongshu.com/publish/publish?from=menu&target=image"
-    article: "https://creator.xiaohongshu.com/publish/publish?from=menu&target=article"
 
 ai:
   default_provider: "mock"

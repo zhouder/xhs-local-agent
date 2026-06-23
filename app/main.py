@@ -32,6 +32,7 @@ from app.services.content_plans import ContentPlanService
 from app.services.hashtags import split_hashtags
 from app.services.materials import MaterialService, parse_asset_paths
 from app.services.publish import PublishService
+from app.services.publish_kinds import PUBLISH_KIND_LABELS, normalize_publish_kind, publish_kind_label
 from app.services.review import ReviewService
 from app.services.scheduler import PublishScheduler
 from app.security import generate_api_key_env, write_api_key
@@ -153,7 +154,7 @@ def generate_note(
     topic: str = Form(...), style: str = Form("实用、自然"), audience: str = Form("科技爱好者"),
     min_length: int = Form(200), max_length: int = Form(600),
     controversial_title: bool = Form(False), educational: bool = Form(False),
-    growth_oriented: bool = Form(False), db: Session = Depends(get_db),
+    growth_oriented: bool = Form(False), publish_kind: str = Form("image_text_to_image"), db: Session = Depends(get_db),
 ):
     try:
         request_data = GenerateNoteRequest(
@@ -161,6 +162,7 @@ def generate_note(
             min_length=min_length, max_length=max_length,
             controversial_title=controversial_title, educational=educational,
             growth_oriented=growth_oriented,
+            publish_kind=normalize_publish_kind(publish_kind),
         )
         note = NoteService(db, ai_provider(db)).generate(request_data)
         return redirect(f"/notes/{note.id}")
@@ -180,6 +182,8 @@ def note_page(note_id: int, request: Request, db: Session = Depends(get_db)):
     if not note:
         raise HTTPException(404, "Note not found")
     media_assets = repo.media_assets(note_id)
+    image_assets = [asset for asset in media_assets if asset.asset_type in {"image", "generated_cover"}]
+    video_assets = [asset for asset in media_assets if asset.asset_type == "video"]
     media_views = [
         {
             "id": asset.id,
@@ -189,27 +193,57 @@ def note_page(note_id: int, request: Request, db: Session = Depends(get_db)):
             "source_type": asset.source_type,
             "license_note": asset.license_note,
         }
-        for asset in media_assets
+        for asset in image_assets
     ]
+    video_view = None
+    if video_assets:
+        asset = video_assets[0]
+        path = asset.file_path or asset.path
+        video_view = {
+            "id": asset.id,
+            "filename": os.path.basename(path),
+            "size": os.path.getsize(path) if os.path.exists(path) else 0,
+            "source_type": asset.source_type,
+            "license_note": asset.license_note,
+        }
     return templates.TemplateResponse(request, "note_detail.html", {
         "note": note,
         "hashtags": ", ".join(json.loads(note.hashtags_json)),
         "media_paths": repo.media_paths(note_id),
         "media_assets": media_assets,
         "media_views": media_views,
+        "video_view": video_view,
+        "publish_kind_label": publish_kind_label(note.publish_kind),
+        "publish_kind_options": PUBLISH_KIND_LABELS,
         "message": request.query_params.get("message", ""),
         "error": request.query_params.get("error", ""),
     })
 
 
 @app.post("/notes/{note_id}/edit")
-def edit_note(note_id: int, title: str = Form(...), body: str = Form(...), hashtags: str = Form(""), cover_prompt: str = Form(""), media_path: str = Form(""), media_paths: str = Form(""), db: Session = Depends(get_db)):
+def edit_note(
+    note_id: int,
+    title: str = Form(...),
+    body: str = Form(...),
+    hashtags: str = Form(""),
+    cover_prompt: str = Form(""),
+    publish_kind: str = Form("image_text_to_image"),
+    text_to_image_prompt: str = Form(""),
+    text_to_image_style: str = Form(""),
+    media_path: str = Form(""),
+    media_paths: str = Form(""),
+    db: Session = Depends(get_db),
+):
     try:
         paths = parse_asset_paths(media_paths) or ([media_path] if media_path.strip() else [])
         update = NoteUpdate(title=title, body=body, hashtags=split_hashtags(hashtags), cover_prompt=cover_prompt, media_path="")
-        NoteService(db, None).update(note_id, update)
+        note = NoteService(db, None).update(note_id, update)
+        note.publish_kind = normalize_publish_kind(publish_kind)
+        note.text_to_image_prompt = text_to_image_prompt.strip()
+        note.text_to_image_style = text_to_image_style.strip()
         if paths:
             MaterialService(db).set_note_assets(note_id, paths)
+        db.commit()
         return redirect(f"/notes/{note_id}", "已保存；如原草稿已提交或批准，审核现已失效并重置为 draft")
     except LookupError as exc:
         return redirect_error(f"/notes/{note_id}", str(exc))
@@ -282,10 +316,20 @@ def final_review_page(note_id: int, request: Request, db: Session = Depends(get_
     if not note:
         raise HTTPException(404, "Note not found")
     errors = list(db.scalars(select(BrowserError).where(BrowserError.note_id == note_id).order_by(desc(BrowserError.created_at)).limit(5)))
+    image_paths = repo.media_paths_by_type(note_id, "image")
+    video_paths = repo.media_paths_by_type(note_id, "video")
+    if note.publish_kind == "video_upload":
+        material_summary = f"视频素材：{os.path.basename(video_paths[0])}" if video_paths else "视频素材：未添加"
+    elif note.publish_kind == "image_upload":
+        material_summary = f"图片素材：{len(image_paths)} 张" if image_paths else "图片素材：未添加"
+    else:
+        material_summary = "生成方式：小红书文字生图"
     return templates.TemplateResponse(request, "final_review.html", {
         "note": note,
         "hashtags": ", ".join(json.loads(note.hashtags_json)),
         "media_paths": repo.media_paths(note_id),
+        "publish_kind_label": publish_kind_label(note.publish_kind),
+        "material_summary": material_summary,
         "errors": errors,
         "screenshot_filename": os.path.basename(note.publish_screenshot_path) if note.publish_screenshot_path else "",
         "preview_filename": os.path.basename(note.publish_preview_html_path) if note.publish_preview_html_path else "",

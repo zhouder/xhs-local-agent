@@ -38,12 +38,29 @@ class MockProvider(AIProviderAdapter):
         while len(compact) < request.min_length:
             compact += filler
         body = compact[: request.max_length]
+        media_type = "video" if request.publish_kind == "video_upload" else "image"
+        if request.publish_kind == "video_upload":
+            media_description = (
+                f"视频脚本：用 3 个镜头讲清“{request.topic}”；"
+                "镜头1提出问题，镜头2展示过程，镜头3总结行动建议。"
+                "agent 不负责生成视频文件，用户需要上传本地 mp4/mov。"
+            )
+        elif request.publish_kind == "image_upload":
+            media_description = (
+                f"图片计划：围绕“{request.topic}”准备 3-5 张图，包含封面、步骤图、对比图和总结图；"
+                "每张图使用清晰标题、简洁构图和真实信息。"
+            )
+        else:
+            media_description = (
+                f"小红书文字生图 prompt：为“{request.topic}”生成一组清爽图文卡片，"
+                "封面文字简短，风格统一，避免夸张承诺和诱导互动。"
+            )
         note = NoteContent(
             title=title,
             body=body,
             hashtags=[request.topic.replace(" ", "")[:20], "科技", "效率工具"],
             cover_prompt="",
-            media_requirements=MediaRequirements(description=f"一张突出“{request.topic}”主题的简洁科技感封面"),
+            media_requirements=MediaRequirements(type=media_type, count=1 if request.publish_kind != "image_upload" else 3, description=media_description),
             safety=self.classify_safety(f"{title}\n{body}"),
         )
         note.cover_prompt = self.generate_cover_prompt(note)

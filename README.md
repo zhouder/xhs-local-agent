@@ -1,6 +1,6 @@
 # XHS Local Agent
 
-Windows 本地运行的小红书内容生产与安全发布 agent。当前版本支持 AI Provider、内容计划、批量生成草稿、人工审核、图片素材管理、本地 dry_run 预览、Playwright 安全填表、最终确认、审计日志和验收脚本。
+Windows 本地运行的小红书内容生产与安全发布 agent。当前版本支持 AI Provider、内容计划、批量生成草稿、人工审核、三种小红书发布类型、本地 dry_run 预览、Playwright 安全填表、最终确认、审计日志和验收脚本。
 
 安全边界不变：不自动评论、不自动私信、不自动点赞、不做兴趣浏览；不绕过验证码、风控或反检测；不读取、导出、打印或保存 cookie；真实发布必须经过人工审核和最终确认。
 
@@ -28,10 +28,20 @@ OpenModel 推荐配置：
 ## 发布模式
 
 - `dry_run`: 纯本地模拟，不打开小红书，不打开浏览器，不访问 `creator.xiaohongshu.com`，不上传素材，不点击发布。它会校验状态、内容、话题和素材，并生成本地 HTML 预览和 1080x1440 PNG 预览图。
-- `fill_only`: 打开小红书发布页。用户手动登录后，系统会重新进入发布页，等待编辑器出现，再填写标题、正文、话题和图片，截图后停在 `waiting_final_confirm`，不点击发布。
+- `fill_only`: 打开小红书发布页。用户手动登录后，系统会按草稿发布类型进入对应页面，上传素材或执行文字生图，再填写标题、正文和话题，截图后停在 `waiting_final_confirm`，不点击发布。
 - `publish_after_final_confirm`: 先按 `fill_only` 填表截图。只有用户在最终确认页点击“最终确认并发布”后，才允许点击发布按钮。无法确认成功时标记为 `publish_uncertain`。
 
 默认浏览器是 Chrome。可以在“设置 -> 浏览器选择”切换 Chrome / Edge / Chromium。调试阶段默认 `browser.keep_open_on_error: true`，选择器失败或登录超时时浏览器会保留，便于人工检查。
+
+## 发布类型
+
+当前只支持三种发布类型，草稿详情页“发布类型”下拉框可切换：
+
+- `video_upload` 视频笔记：上传视频。目标 URL 为 `https://creator.xiaohongshu.com/publish/publish?from=menu&target=video`。
+- `image_upload` 图文笔记：上传自己的图片。目标 URL 为 `https://creator.xiaohongshu.com/publish/publish?from=menu&target=image`。
+- `image_text_to_image` 图文笔记：使用小红书“写文字生成图片”。目标 URL 为 `https://creator.xiaohongshu.com/publish/publish?from=menu&target=image`。
+
+暂不支持写长文、发播客。无图片草稿不会再自动进入 `target=article`，默认按 `image_text_to_image` 处理。
 
 ## 登录流程
 
@@ -39,9 +49,15 @@ OpenModel 推荐配置：
 
 如果打开的是登录页，请在浏览器里扫码登录。登录后系统会再次跳转到发布页，并等待发布页编辑器。如果 180 秒内找不到编辑器，页面会显示中文错误，`browser_errors` 会记录当前 URL、页面标题、步骤、选择器候选和截图。
 
-## 图片素材
+## 素材管理
 
-草稿详情页的“图片素材”区支持：
+草稿详情页会按发布类型显示不同素材区域：
+
+- 视频笔记：点击“添加视频”，支持 1 个 `mp4/mov`，保存到 `data/media/note-{id}/`。当前封面设置是 TODO。
+- 图文笔记：点击“添加图片”，支持 1-9 张 `png/jpg/jpeg/webp`，保存到 `data/media/note-{id}/`。
+- 文字生图：填写“文字生图文案 / prompt”和风格偏好，不要求上传图片。
+
+图片素材区支持：
 
 - 点击“添加图片”后自动上传并刷新页面
 - 一次选择多张图片
@@ -51,7 +67,13 @@ OpenModel 推荐配置：
 - 删除图片后自动重排
 - 生成 1080x1440 本地 AI 封面图
 
-支持 `png/jpg/jpeg/webp`。上传文件复制到 `data/media/note-{id}/`，不提交 GitHub。AI 封面由 Pillow 本地生成，使用系统字体和几何背景，不下载外部版权图片。
+上传文件复制到 `data/media/note-{id}/`，不提交 GitHub。AI 封面由 Pillow 本地生成，使用系统字体和几何背景，不下载外部版权图片。
+
+## fill_only 行为
+
+- 视频笔记：打开【上传视频】页面，上传视频，等待处理完成或编辑区出现，再填写标题、正文、话题，截图后等待最终确认。
+- 图文笔记：打开【上传图文】页面，先上传图片，等待缩略图/预览/编辑区出现，再填写标题、正文、话题，截图后等待最终确认。
+- 文字生图：打开【上传图文】页面，点击【写文字生成图片】，填写 prompt，点击生成，选择默认模板并下一步，再填写标题、正文、话题，截图后等待最终确认。
 
 ## 最终确认页
 
@@ -70,10 +92,12 @@ fill_only 后最终确认页显示真实页面截图。只有状态为 `waiting_
 打开浏览器诊断：
 
 ```powershell
-.\.venv\Scripts\python.exe scripts\check_xhs_selectors.py --open-page
+.\.venv\Scripts\python.exe scripts\check_xhs_selectors.py --open-page --target video
+.\.venv\Scripts\python.exe scripts\check_xhs_selectors.py --open-page --target image-upload
+.\.venv\Scripts\python.exe scripts\check_xhs_selectors.py --open-page --target image-text-to-image
 ```
 
-`--open-page` 会使用同一个 Chrome profile 打开发布页，输出每个 selector key 的候选、命中情况、命中序号、元素 tag、placeholder 和文本摘要，并保存诊断截图。它不会填写内容、不会发布、不会读取 cookie。
+`--open-page` 会使用同一个 Chrome profile 打开对应发布页，输出每个 selector key 的候选、命中情况、命中序号、元素 tag、placeholder 和文本摘要，并保存诊断截图。它不会上传文件、不会填写正文、不会发布、不会读取 cookie。兼容别名：`--target image`、`--target text2image`。
 
 ## 内容计划与批量生成
 

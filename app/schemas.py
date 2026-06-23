@@ -39,6 +39,7 @@ class GenerateNoteRequest(StrictModel):
     controversial_title: bool = False
     educational: bool = False
     growth_oriented: bool = True
+    publish_kind: Literal["video_upload", "image_upload", "image_text_to_image"] = "image_text_to_image"
 
     @model_validator(mode="after")
     def validate_length_range(self):
