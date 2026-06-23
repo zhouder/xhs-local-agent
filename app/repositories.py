@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from sqlalchemy import desc, select
+from sqlalchemy import delete, desc, select
 from sqlalchemy.orm import Session
 
 from app.models import AuditLog, MediaAsset, Note
@@ -59,13 +59,26 @@ class NoteRepository:
         note.hashtags_json = json.dumps(update.hashtags, ensure_ascii=False)
         note.cover_prompt = update.cover_prompt
         if update.media_path:
-            existing = self.db.scalar(select(MediaAsset).where(MediaAsset.note_id == note.id))
-            if existing:
-                existing.path = update.media_path
-            else:
-                self.db.add(MediaAsset(note_id=note.id, path=update.media_path))
+            self.replace_media_paths(note.id, [update.media_path])
         self.db.flush()
         return note
 
     def media_paths(self, note_id: int) -> list[str]:
-        return list(self.db.scalars(select(MediaAsset.path).where(MediaAsset.note_id == note_id)))
+        rows = self.db.scalars(select(MediaAsset).where(MediaAsset.note_id == note_id).order_by(MediaAsset.upload_order, MediaAsset.id))
+        return [row.file_path or row.path for row in rows]
+
+    def media_assets(self, note_id: int) -> list[MediaAsset]:
+        return list(self.db.scalars(select(MediaAsset).where(MediaAsset.note_id == note_id).order_by(MediaAsset.upload_order, MediaAsset.id)))
+
+    def replace_media_paths(self, note_id: int, paths: list[str]) -> None:
+        self.db.execute(delete(MediaAsset).where(MediaAsset.note_id == note_id))
+        for index, path in enumerate(paths, start=1):
+            self.db.add(MediaAsset(
+                note_id=note_id,
+                path=path,
+                file_path=path,
+                media_type="image",
+                asset_type="image",
+                upload_order=index,
+                status="ready",
+            ))

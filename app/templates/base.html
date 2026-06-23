@@ -8,12 +8,19 @@
   <link rel="stylesheet" href="{{ url_for('static', path='/style.css') }}">
 </head>
 <body>
-  <header><strong>XHS Local Agent</strong><span class="badge">本地 MVP · Dry-run</span></header>
+  <header><strong>XHS Local Agent</strong><span class="badge">Safe publish workflow</span></header>
   <nav>
-    <a href="/">Dashboard</a><a href="/notes">草稿</a><a href="/records/comments">评论</a>
-    <a href="/records/messages">私信</a><a href="/records/interactions">互动</a>
-    <a href="/audit">审计日志</a><a href="/records/errors">浏览器错误</a><a href="/settings">设置</a>
+    <a href="/">Dashboard</a>
+    <a href="/notes">草稿</a>
+    <a href="/plans">内容计划</a>
+    <a href="/audit">审计日志</a>
+    <a href="/records/errors">浏览器错误</a>
+    <a href="/records/commands">命令事件</a>
+    <a href="/settings">设置</a>
   </nav>
-  <main>{% if message %}<p class="notice">{{ message }}</p>{% endif %}{% block content %}{% endblock %}</main>
+  <main>
+    {% if message %}<p class="notice">{{ message }}</p>{% endif %}
+    {% block content %}{% endblock %}
+  </main>
 </body>
 </html>

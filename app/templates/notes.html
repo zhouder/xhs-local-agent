@@ -1,5 +1,6 @@
 {% extends "base.html" %}{% block title %}草稿{% endblock %}
-{% block content %}<h1>内容草稿</h1>
+{% block content %}
+<h1>内容草稿</h1>
 <section><h2>生成新草稿</h2>
 <form method="post" action="/notes/generate" class="stack">
   <div class="grid-form">
@@ -10,11 +11,29 @@
   <div class="grid-form">
     <label>最少字数<input type="number" name="min_length" value="200" min="80" max="2000"></label>
     <label>最多字数<input type="number" name="max_length" value="600" min="100" max="3000"></label>
-    <label class="check"><input type="checkbox" name="controversial_title" value="true">观点讨论型标题</label>
-    <label class="check"><input type="checkbox" name="educational" value="true">偏科普</label>
-    <label class="check"><input type="checkbox" name="growth_oriented" value="true" checked>偏涨粉表达</label>
+    <label class="check"><input type="checkbox" name="controversial_title" value="true"> 争议性标题</label>
+    <label class="check"><input type="checkbox" name="educational" value="true"> 偏科普</label>
+    <label class="check"><input type="checkbox" name="growth_oriented" value="true" checked> 偏涨粉</label>
   </div>
-  <p class="muted">争议性标题仅用于理性观点讨论；系统会拦截敏感建议、虚假承诺、夸大收益和违规互动话术。</p>
   <button class="primary">生成草稿</button>
 </form></section>
-<section><table><tr><th>ID</th><th>标题</th><th>主题</th><th>状态</th><th></th></tr>{% for note in notes %}<tr><td>{{ note.id }}</td><td>{{ note.title }}</td><td>{{ note.topic }}</td><td><span class="status">{{ note.status }}</span></td><td><a href="/notes/{{ note.id }}">编辑/审核</a></td></tr>{% else %}<tr><td colspan="5">暂无草稿</td></tr>{% endfor %}</table></section>{% endblock %}
+
+<section>
+  <form method="get" action="/notes" class="row">
+    <label>按计划筛选
+      <select name="plan_id">
+        <option value="">全部</option>
+        {% for plan in plans %}<option value="{{ plan.id }}" {% if selected_plan_id == plan.id %}selected{% endif %}>{{ plan.name }}</option>{% endfor %}
+      </select>
+    </label>
+    <button>筛选</button>
+  </form>
+  <table><tr><th>ID</th><th>标题</th><th>主题</th><th>计划</th><th>状态</th><th></th></tr>
+  {% for note in notes %}
+    <tr><td>{{ note.id }}</td><td>{{ note.title }}</td><td>{{ note.topic }}</td><td>{{ note.content_plan_id or '-' }}</td><td><span class="status">{{ note.status }}</span></td><td><a href="/notes/{{ note.id }}">编辑/审核</a></td></tr>
+  {% else %}
+    <tr><td colspan="6">暂无草稿</td></tr>
+  {% endfor %}
+  </table>
+</section>
+{% endblock %}

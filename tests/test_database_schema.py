@@ -5,6 +5,7 @@ EXPECTED_TABLES = {
     "ai_providers", "notes", "media_assets", "comments", "messages",
     "interactions", "review_queue", "audit_logs", "settings",
     "browser_errors", "command_events", "scheduled_jobs", "provider_models",
+    "content_plans", "content_plan_topics", "scheduled_publish_slots",
 }
 
 

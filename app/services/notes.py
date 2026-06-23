@@ -35,7 +35,7 @@ class NoteService:
         note = self.notes.get(note_id)
         if not note:
             raise LookupError("Note not found")
-        if note.status in {NoteStatus.PUBLISHING, NoteStatus.PUBLISHED}:
+        if note.status in {NoteStatus.PUBLISHING, NoteStatus.WAITING_FINAL_CONFIRM, NoteStatus.PUBLISHED, NoteStatus.CANCELLED}:
             raise ValueError("Published notes cannot be regenerated")
         with audited(self.audit, "ai.regenerate_note", target_type="note", target_id=str(note_id)):
             request = GenerateNoteRequest(
@@ -60,10 +60,10 @@ class NoteService:
         note = self.notes.get(note_id)
         if not note:
             raise LookupError("Note not found")
-        if note.status in {NoteStatus.PUBLISHING, NoteStatus.PUBLISHED}:
+        if note.status in {NoteStatus.PUBLISHING, NoteStatus.WAITING_FINAL_CONFIRM, NoteStatus.PUBLISHED, NoteStatus.CANCELLED}:
             raise ValueError("Publishing or published notes cannot be edited")
         self.notes.update_content(note, update)
-        if note.status in {NoteStatus.PENDING_REVIEW, NoteStatus.APPROVED, NoteStatus.FAILED, NoteStatus.REJECTED}:
+        if note.status in {NoteStatus.PENDING_REVIEW, NoteStatus.APPROVED, NoteStatus.FAILED, NoteStatus.REJECTED, NoteStatus.RETURNED_TO_EDIT, NoteStatus.PUBLISH_UNCERTAIN}:
             self._reset_review(note)
         self.notes.db.commit()
         self.audit.record("note.updated", "success", target_type="note", target_id=note.id, metadata={"approval_invalidated": note.approved_at is None})

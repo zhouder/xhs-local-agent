@@ -1,0 +1,36 @@
+{% extends "base.html" %}{% block title %}最终确认 {{ note.id }}{% endblock %}
+{% block content %}
+<div class="row between"><div><h1>待最终确认 #{{ note.id }}</h1><span class="status">{{ note.status }}</span></div><a href="/notes/{{ note.id }}">返回草稿</a></div>
+
+<section class="stack">
+  <p><b>发布模式：</b>{{ note.publish_mode }}</p>
+  <p><b>标题：</b>{{ note.title }}</p>
+  <p><b>话题：</b>{{ hashtags }}</p>
+  <p><b>素材：</b>{% if media_paths %}{{ media_paths|join(', ') }}{% else %}无图片素材，纯文本流程{% endif %}</p>
+  <label>正文<textarea rows="10" readonly>{{ note.body }}</textarea></label>
+  {% if note.publish_screenshot_path %}
+    <p><b>填表后截图：</b>{{ note.publish_screenshot_path }}</p>
+    {% if screenshot_filename %}<img src="/screenshots/{{ screenshot_filename }}" alt="publish screenshot" style="max-width:100%;border:1px solid #ddd;border-radius:8px">{% endif %}
+  {% else %}
+    <p class="warning">尚未生成填表截图，不能最终确认。</p>
+  {% endif %}
+  {% if note.publish_error_message %}<p class="warning">错误/人工核验提示：{{ note.publish_error_message }}</p>{% endif %}
+</section>
+
+<section><h2>操作</h2><div class="actions">
+  <form method="post" action="/notes/{{ note.id }}/final-confirm"><button class="danger" {% if note.status != 'waiting_final_confirm' or not note.publish_screenshot_path %}disabled{% endif %}>最终确认并发布</button></form>
+  <form method="post" action="/notes/{{ note.id }}/cancel-publish"><button>放弃发布</button></form>
+  <form method="post" action="/notes/{{ note.id }}/return-to-edit"><button>返回编辑</button></form>
+  <form method="post" action="/notes/{{ note.id }}/retry-fill"><input type="hidden" name="mode" value="fill_only"><button>重新填表</button></form>
+  <a class="button" href="/audit?target_id={{ note.id }}">查看审计日志</a>
+  <a class="button" href="/records/errors">查看浏览器错误</a>
+</div></section>
+
+<section><h2>最近浏览器错误</h2><table><tr><th>时间</th><th>步骤</th><th>选择器</th><th>错误</th><th>截图</th></tr>
+{% for error in errors %}
+  <tr><td>{{ error.created_at }}</td><td>{{ error.step }}</td><td>{{ error.selector_name }}</td><td>{{ error.error_message }}</td><td>{{ error.screenshot_path }}</td></tr>
+{% else %}
+  <tr><td colspan="5">暂无错误</td></tr>
+{% endfor %}
+</table></section>
+{% endblock %}

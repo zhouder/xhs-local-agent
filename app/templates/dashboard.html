@@ -1,8 +1,48 @@
 {% extends "base.html" %}{% block title %}Dashboard{% endblock %}
 {% block content %}
-<div class="row between"><div><h1>运行概览</h1><p class="muted">真实发布、评论和兴趣互动在第一阶段均未启用。</p></div>
-<form method="post" action="/agent/{{ 'resume' if paused else 'pause' }}"><button class="{{ 'primary' if paused else 'danger' }}">{{ '恢复 agent' if paused else '暂停 agent' }}</button></form></div>
-<section class="cards"><article><b>{{ counts.pending_review }}</b><span>待审核</span></article><article><b>{{ counts.approved }}</b><span>已批准</span></article><article><b>{{ counts.published }}</b><span>已发布</span></article><article><b>{{ '已暂停' if paused else '运行中' }}</b><span>Agent 状态</span></article></section>
-<section><h2>最近草稿</h2><table><tr><th>ID</th><th>标题</th><th>状态</th><th></th></tr>{% for note in notes %}<tr><td>{{ note.id }}</td><td>{{ note.title }}</td><td><span class="status">{{ note.status }}</span></td><td><a href="/notes/{{ note.id }}">查看</a></td></tr>{% else %}<tr><td colspan="4">暂无草稿</td></tr>{% endfor %}</table></section>
-<section><h2>最近审计</h2><table><tr><th>时间</th><th>动作</th><th>状态</th></tr>{% for row in audit_logs %}<tr><td>{{ row.created_at }}</td><td>{{ row.action_type }}</td><td>{{ row.status }}</td></tr>{% else %}<tr><td colspan="3">暂无记录</td></tr>{% endfor %}</table></section>
+<div class="row between">
+  <div>
+    <h1>运行概览</h1>
+    <p class="muted">默认 dry_run；发布按钮只会在最终确认后点击。评论、私信、点赞、兴趣浏览仍禁用。</p>
+  </div>
+  <div class="actions">
+    <form method="post" action="/agent/{{ 'resume' if paused else 'pause' }}"><button class="{{ 'primary' if paused else 'danger' }}">{{ '恢复 agent' if paused else '暂停 agent' }}</button></form>
+    <form method="post" action="/scheduler/{{ 'resume' if scheduler_paused else 'pause' }}"><button>{{ '恢复调度器' if scheduler_paused else '暂停调度器' }}</button></form>
+    <form method="post" action="/scheduler/run-once"><button>立即调度一次</button></form>
+  </div>
+</div>
+
+<section class="cards">
+  <article><b>{{ counts.draft }}</b><span>draft</span></article>
+  <article><b>{{ counts.pending_review }}</b><span>pending_review</span></article>
+  <article><b>{{ counts.approved }}</b><span>approved</span></article>
+  <article><b>{{ counts.waiting_final_confirm }}</b><span>waiting_final_confirm</span></article>
+  <article><b>{{ counts.failed }}</b><span>failed</span></article>
+  <article><b>{{ counts.publish_uncertain }}</b><span>publish_uncertain</span></article>
+  <article><b>{{ today_published }}</b><span>今日已发布</span></article>
+  <article><b>{{ today_generated }}</b><span>今日 AI 草稿</span></article>
+</section>
+
+<section>
+  <h2>最近草稿</h2>
+  <table><tr><th>ID</th><th>标题</th><th>状态</th><th></th></tr>
+  {% for note in notes %}
+    <tr><td>{{ note.id }}</td><td>{{ note.title }}</td><td><span class="status">{{ note.status }}</span></td><td><a href="/notes/{{ note.id }}">查看</a></td></tr>
+  {% else %}
+    <tr><td colspan="4">暂无草稿</td></tr>
+  {% endfor %}
+  </table>
+</section>
+
+<section>
+  <h2>命令测试</h2>
+  <form method="post" action="/commands/mock" class="row">
+    <input name="command" placeholder="/status 或 /waiting" style="min-width: 320px">
+    <button>执行 mock command</button>
+  </form>
+</section>
+
+<section><h2>最近审计</h2><table><tr><th>时间</th><th>动作</th><th>状态</th></tr>
+{% for row in audit_logs %}<tr><td>{{ row.created_at }}</td><td>{{ row.action_type }}</td><td>{{ row.status }}</td></tr>{% else %}<tr><td colspan="3">暂无记录</td></tr>{% endfor %}
+</table></section>
 {% endblock %}

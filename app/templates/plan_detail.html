@@ -1,0 +1,21 @@
+{% extends "base.html" %}{% block title %}计划 {{ plan.id }}{% endblock %}
+{% block content %}
+<div class="row between"><div><h1>{{ plan.name }}</h1><span class="status">{{ plan.status }}</span></div><a href="/plans">返回计划</a></div>
+<section>
+  <p><b>目标人群：</b>{{ plan.audience }}</p>
+  <p><b>内容风格：</b>{{ plan.style }}</p>
+  <p><b>目标：</b>{{ plan.goal }}</p>
+  <p><b>进度：</b>{{ progress }}</p>
+  <div class="actions">
+    <form method="post" action="/plans/{{ plan.id }}/generate"><button class="primary">批量生成草稿</button></form>
+    <a class="button" href="/notes?plan_id={{ plan.id }}">查看该计划草稿</a>
+  </div>
+</section>
+<section><h2>主题</h2><table><tr><th>ID</th><th>主题</th><th>状态</th><th>note_id</th><th>错误</th></tr>
+{% for topic in topics %}
+  <tr><td>{{ topic.id }}</td><td>{{ topic.topic }}</td><td>{{ topic.status }}</td><td>{% if topic.note_id %}<a href="/notes/{{ topic.note_id }}">{{ topic.note_id }}</a>{% else %}-{% endif %}</td><td>{{ topic.error_message }}</td></tr>
+{% else %}
+  <tr><td colspan="5">暂无主题</td></tr>
+{% endfor %}
+</table></section>
+{% endblock %}

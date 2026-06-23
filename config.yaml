@@ -144,6 +144,8 @@ ai:
 
 publish:
   require_review: true
+  default_mode: "dry_run"
+  final_confirm_required: true
   default_schedule_enabled: false
   default_publish_times:
     - "10:30"

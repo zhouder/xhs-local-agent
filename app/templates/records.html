@@ -1,1 +1,19 @@
-{% extends "base.html" %}{% block title %}{{ kind }}{% endblock %}{% block content %}<h1>{{ kind }}</h1><p class="muted">此页面为后续阶段保留。当前仅展示已写入的本地记录。</p><table><tr><th>ID</th><th>创建时间</th><th>状态/动作</th><th>内容/错误</th></tr>{% for row in rows %}<tr><td>{{ row.id }}</td><td>{{ row.created_at }}</td><td>{{ row.status|default(row.action_type|default('')) }}</td><td>{{ row.text|default(row.error_message|default(row.target_text|default(''))) }}</td></tr>{% else %}<tr><td colspan="4">暂无记录</td></tr>{% endfor %}</table>{% endblock %}
+{% extends "base.html" %}{% block title %}{{ kind }}{% endblock %}
+{% block content %}
+<h1>{{ kind }}</h1>
+<p class="muted">只展示本地记录；不展示 API key、cookie、token 或模型 thinking。</p>
+<section><table>
+  <tr><th>ID</th><th>创建时间</th><th>状态/动作</th><th>内容/错误</th><th>截图/响应</th></tr>
+  {% for row in rows %}
+    <tr>
+      <td>{{ row.id }}</td>
+      <td>{{ row.created_at }}</td>
+      <td>{{ row.status|default(row.action_type|default(row.command|default(''))) }}</td>
+      <td>{{ row.error_message|default(row.text|default(row.target_text|default(row.step|default('')))) }}</td>
+      <td>{{ row.screenshot_path|default(row.response|default('')) }}</td>
+    </tr>
+  {% else %}
+    <tr><td colspan="5">暂无记录</td></tr>
+  {% endfor %}
+</table></section>
+{% endblock %}

@@ -43,11 +43,17 @@ def init_db() -> None:
             "controversial_title": "BOOLEAN NOT NULL DEFAULT 0",
             "educational": "BOOLEAN NOT NULL DEFAULT 0",
             "growth_oriented": "BOOLEAN NOT NULL DEFAULT 1",
+            "publish_mode": "VARCHAR(40) NOT NULL DEFAULT 'dry_run'",
+            "publish_screenshot_path": "VARCHAR(1000) NOT NULL DEFAULT ''",
+            "publish_error_message": "TEXT NOT NULL DEFAULT ''",
+            "content_plan_id": "INTEGER",
         }
         with engine.begin() as connection:
             for name, definition in additions.items():
                 if name not in columns:
                     connection.execute(text(f"ALTER TABLE notes ADD COLUMN {name} {definition}"))
+        _migrate_media_assets(engine)
+        _migrate_browser_errors(engine)
         _migrate_ai_providers(engine)
     from app.services.provider_registry import ProviderRegistry
 
@@ -86,6 +92,40 @@ def _migrate_ai_providers(target_engine=None) -> None:
         connection.execute(text("UPDATE ai_providers SET default_model_id = model_id WHERE default_model_id = '' OR default_model_id IS NULL"))
         connection.execute(text("UPDATE ai_providers SET display_name = name WHERE display_name = '' OR display_name IS NULL"))
         connection.execute(text("UPDATE ai_providers SET provider_type = 'mock' WHERE name = 'mock'"))
+
+
+def _migrate_media_assets(target_engine=None) -> None:
+    target_engine = target_engine or engine
+    columns = {column["name"] for column in inspect(target_engine).get_columns("media_assets")}
+    additions = {
+        "asset_type": "VARCHAR(30) NOT NULL DEFAULT 'image'",
+        "file_path": "VARCHAR(1000) NOT NULL DEFAULT ''",
+        "mime_type": "VARCHAR(100) NOT NULL DEFAULT ''",
+        "upload_order": "INTEGER NOT NULL DEFAULT 1",
+        "status": "VARCHAR(30) NOT NULL DEFAULT 'ready'",
+        "error_message": "TEXT NOT NULL DEFAULT ''",
+    }
+    with target_engine.begin() as connection:
+        for name, definition in additions.items():
+            if name not in columns:
+                connection.execute(text(f"ALTER TABLE media_assets ADD COLUMN {name} {definition}"))
+        connection.execute(text("UPDATE media_assets SET file_path = path WHERE file_path = '' OR file_path IS NULL"))
+        connection.execute(text("UPDATE media_assets SET asset_type = media_type WHERE asset_type = '' OR asset_type IS NULL"))
+
+
+def _migrate_browser_errors(target_engine=None) -> None:
+    target_engine = target_engine or engine
+    columns = {column["name"] for column in inspect(target_engine).get_columns("browser_errors")}
+    additions = {
+        "note_id": "INTEGER",
+        "mode": "VARCHAR(40) NOT NULL DEFAULT ''",
+        "step": "VARCHAR(80) NOT NULL DEFAULT ''",
+        "selector_name": "VARCHAR(100) NOT NULL DEFAULT ''",
+    }
+    with target_engine.begin() as connection:
+        for name, definition in additions.items():
+            if name not in columns:
+                connection.execute(text(f"ALTER TABLE browser_errors ADD COLUMN {name} {definition}"))
 
 
 def get_db():

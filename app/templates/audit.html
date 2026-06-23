@@ -1,1 +1,24 @@
-{% extends "base.html" %}{% block title %}审计日志{% endblock %}{% block content %}<h1>审计日志</h1><table><tr><th>时间</th><th>动作</th><th>目标</th><th>状态</th><th>摘要/错误</th><th>截图</th></tr>{% for row in rows %}<tr><td>{{ row.created_at }}</td><td>{{ row.action_type }}</td><td>{{ row.target_type }} {{ row.target_id }}</td><td>{{ row.status }}</td><td>{{ row.error_message or row.output_summary }}</td><td>{% if row.screenshot_path %}{{ row.screenshot_path }}{% endif %}</td></tr>{% else %}<tr><td colspan="6">暂无日志</td></tr>{% endfor %}</table>{% endblock %}
+{% extends "base.html" %}{% block title %}审计日志{% endblock %}
+{% block content %}
+<h1>审计日志</h1>
+<section>
+  <form method="get" action="/audit" class="row wrap">
+    <input name="action_type" value="{{ filters.action_type }}" placeholder="action_type">
+    <input name="target_id" value="{{ filters.target_id }}" placeholder="note_id / target_id">
+    <select name="status">
+      <option value="">全部状态</option>
+      {% for item in ['success','failed','blocked'] %}<option value="{{ item }}" {% if filters.status == item %}selected{% endif %}>{{ item }}</option>{% endfor %}
+    </select>
+    <button>筛选</button>
+  </form>
+</section>
+<section>
+<table><tr><th>时间</th><th>动作</th><th>目标</th><th>状态</th><th>摘要/错误</th><th>截图</th></tr>
+{% for row in rows %}
+  <tr><td>{{ row.created_at }}</td><td>{{ row.action_type }}</td><td>{{ row.target_type }} {{ row.target_id }}</td><td>{{ row.status }}</td><td>{{ row.error_message or row.output_summary }}</td><td>{{ row.screenshot_path }}</td></tr>
+{% else %}
+  <tr><td colspan="6">暂无日志</td></tr>
+{% endfor %}
+</table>
+</section>
+{% endblock %}

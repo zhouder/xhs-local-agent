@@ -7,10 +7,20 @@ ALLOWED_TRANSITIONS: dict[str, set[str]] = {
     NoteStatus.DRAFT: {NoteStatus.PENDING_REVIEW},
     NoteStatus.PENDING_REVIEW: {NoteStatus.APPROVED, NoteStatus.REJECTED, NoteStatus.DRAFT},
     NoteStatus.APPROVED: {NoteStatus.PUBLISHING, NoteStatus.DRAFT},
-    NoteStatus.PUBLISHING: {NoteStatus.PUBLISHED, NoteStatus.FAILED},
+    NoteStatus.PUBLISHING: {NoteStatus.WAITING_FINAL_CONFIRM, NoteStatus.FAILED},
+    NoteStatus.WAITING_FINAL_CONFIRM: {
+        NoteStatus.PUBLISHED,
+        NoteStatus.PUBLISH_UNCERTAIN,
+        NoteStatus.CANCELLED,
+        NoteStatus.RETURNED_TO_EDIT,
+        NoteStatus.FAILED,
+    },
     NoteStatus.PUBLISHED: set(),
+    NoteStatus.PUBLISH_UNCERTAIN: {NoteStatus.PUBLISHED, NoteStatus.FAILED, NoteStatus.RETURNED_TO_EDIT},
     NoteStatus.FAILED: {NoteStatus.DRAFT, NoteStatus.PUBLISHING},
-    NoteStatus.REJECTED: {NoteStatus.DRAFT, NoteStatus.PENDING_REVIEW},
+    NoteStatus.REJECTED: {NoteStatus.DRAFT},
+    NoteStatus.RETURNED_TO_EDIT: {NoteStatus.DRAFT},
+    NoteStatus.CANCELLED: set(),
 }
 
 

@@ -13,9 +13,13 @@ class NoteStatus(StrEnum):
     PENDING_REVIEW = "pending_review"
     APPROVED = "approved"
     PUBLISHING = "publishing"
+    WAITING_FINAL_CONFIRM = "waiting_final_confirm"
     PUBLISHED = "published"
+    PUBLISH_UNCERTAIN = "publish_uncertain"
     FAILED = "failed"
     REJECTED = "rejected"
+    RETURNED_TO_EDIT = "returned_to_edit"
+    CANCELLED = "cancelled"
 
 
 class TimestampMixin:
@@ -78,6 +82,10 @@ class Note(TimestampMixin, Base):
     media_requirements_json: Mapped[str] = mapped_column(Text, default="{}")
     safety_json: Mapped[str] = mapped_column(Text, default="{}")
     status: Mapped[str] = mapped_column(String(30), default=NoteStatus.DRAFT)
+    publish_mode: Mapped[str] = mapped_column(String(40), default="dry_run")
+    publish_screenshot_path: Mapped[str] = mapped_column(String(1000), default="")
+    publish_error_message: Mapped[str] = mapped_column(Text, default="")
+    content_plan_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
     approved_at: Mapped[object | None] = mapped_column(DateTime, nullable=True)
     published_at: Mapped[object | None] = mapped_column(DateTime, nullable=True)
 
@@ -91,6 +99,12 @@ class MediaAsset(TimestampMixin, Base):
     note_id: Mapped[int] = mapped_column(ForeignKey("notes.id"), index=True)
     path: Mapped[str] = mapped_column(String(1000))
     media_type: Mapped[str] = mapped_column(String(30), default="image")
+    asset_type: Mapped[str] = mapped_column(String(30), default="image")
+    file_path: Mapped[str] = mapped_column(String(1000), default="")
+    mime_type: Mapped[str] = mapped_column(String(100), default="")
+    upload_order: Mapped[int] = mapped_column(Integer, default=1)
+    status: Mapped[str] = mapped_column(String(30), default="ready")
+    error_message: Mapped[str] = mapped_column(Text, default="")
 
 
 class Comment(TimestampMixin, Base):
@@ -151,6 +165,10 @@ class Setting(TimestampMixin, Base):
 
 class BrowserError(TimestampMixin, Base):
     __tablename__ = "browser_errors"
+    note_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    mode: Mapped[str] = mapped_column(String(40), default="")
+    step: Mapped[str] = mapped_column(String(80), default="")
+    selector_name: Mapped[str] = mapped_column(String(100), default="")
     action_type: Mapped[str] = mapped_column(String(100))
     error_message: Mapped[str] = mapped_column(Text)
     screenshot_path: Mapped[str] = mapped_column(String(1000), default="")
@@ -173,3 +191,29 @@ class ScheduledJob(TimestampMixin, Base):
     schedule_json: Mapped[str] = mapped_column(Text, default="{}")
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     last_status: Mapped[str] = mapped_column(String(30), default="never_run")
+
+
+class ContentPlan(TimestampMixin, Base):
+    __tablename__ = "content_plans"
+    name: Mapped[str] = mapped_column(String(200))
+    audience: Mapped[str] = mapped_column(String(200), default="")
+    style: Mapped[str] = mapped_column(String(100), default="")
+    goal: Mapped[str] = mapped_column(String(100), default="")
+    status: Mapped[str] = mapped_column(String(30), default="active")
+    notes_json: Mapped[str] = mapped_column(Text, default="{}")
+
+
+class ContentPlanTopic(TimestampMixin, Base):
+    __tablename__ = "content_plan_topics"
+    plan_id: Mapped[int] = mapped_column(ForeignKey("content_plans.id"), index=True)
+    topic: Mapped[str] = mapped_column(String(300))
+    status: Mapped[str] = mapped_column(String(30), default="pending")
+    note_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    error_message: Mapped[str] = mapped_column(Text, default="")
+
+
+class ScheduledPublishSlot(TimestampMixin, Base):
+    __tablename__ = "scheduled_publish_slots"
+    note_id: Mapped[int] = mapped_column(ForeignKey("notes.id"), index=True)
+    planned_time: Mapped[object] = mapped_column(DateTime, nullable=False)
+    status: Mapped[str] = mapped_column(String(30), default="planned")

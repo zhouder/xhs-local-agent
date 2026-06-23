@@ -7,10 +7,10 @@ from contextlib import asynccontextmanager
 from urllib.parse import urlencode, urlsplit
 
 from fastapi import Depends, FastAPI, Form, HTTPException, Request
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
-from sqlalchemy import desc, select
+from sqlalchemy import desc, func, select
 from sqlalchemy.orm import Session
 
 from app.ai.factory import create_provider_from_profile
@@ -21,13 +21,18 @@ from app.ai.openai_compatible import AIProviderError
 from app.browser.xhs import XHSBrowser
 from app.config import ROOT, get_settings
 from app.database import SessionLocal, get_db, init_db
-from app.models import AuditLog, BrowserError, Comment, Interaction, Message, NoteStatus
+from app.models import AuditLog, BrowserError, CommandEvent, Comment, ContentPlan, ContentPlanTopic, Interaction, Message, Note, NoteStatus
 from app.repositories import AuditRepository, NoteRepository
 from app.schemas import GenerateNoteRequest, NoteUpdate
 from app.services.notes import NoteService
 from app.services.notifications import create_notifier
 from app.services.policy import PolicyEngine
+from app.services.commands import CommandExecutor
+from app.services.content_plans import ContentPlanService
+from app.services.materials import MaterialService, parse_asset_paths
+from app.services.publish import PublishService
 from app.services.review import ReviewService
+from app.services.scheduler import PublishScheduler
 from app.security import generate_api_key_env, write_api_key
 from app.services.provider_registry import ProviderInput, ProviderRegistry, provider_requires_api_key, provider_view
 
@@ -45,6 +50,15 @@ async def lifespan(_: FastAPI):
 
 app = FastAPI(title="XHS Local Growth Agent", lifespan=lifespan)
 app.mount("/static", StaticFiles(directory=ROOT / "app/static"), name="static")
+
+
+@app.get("/screenshots/{filename}")
+def screenshot_file(filename: str):
+    directory = (ROOT / settings.browser["screenshots_dir"]).resolve()
+    path = (directory / filename).resolve()
+    if directory not in path.parents or not path.exists() or path.suffix.casefold() != ".png":
+        raise HTTPException(404)
+    return FileResponse(path)
 
 
 @app.middleware("http")
@@ -94,13 +108,26 @@ def dashboard(request: Request, db: Session = Depends(get_db)):
     notes = NoteRepository(db).list()
     counts = {status.value: sum(n.status == status.value for n in notes) for status in NoteStatus}
     paused = PolicyEngine(db, settings).is_paused()
+    scheduler_paused = PublishScheduler(db, settings, notifier()).paused()
+    today = __import__("datetime").date.today().isoformat()
+    today_published = db.scalar(select(func.count()).select_from(Note).where(Note.status == NoteStatus.PUBLISHED.value, func.date(Note.published_at) == today)) or 0
+    today_generated = db.scalar(select(func.count()).select_from(AuditLog).where(AuditLog.action_type == "ai.generate_note", AuditLog.status == "success", func.date(AuditLog.created_at) == today)) or 0
+    plan_count = db.scalar(select(func.count()).select_from(ContentPlan)) or 0
     recent = list(db.scalars(select(AuditLog).order_by(desc(AuditLog.created_at)).limit(10)))
-    return templates.TemplateResponse(request, "dashboard.html", {"notes": notes[:5], "counts": counts, "paused": paused, "audit_logs": recent})
+    return templates.TemplateResponse(request, "dashboard.html", {
+        "notes": notes[:5], "counts": counts, "paused": paused, "scheduler_paused": scheduler_paused,
+        "audit_logs": recent, "today_published": today_published, "today_generated": today_generated,
+        "plan_count": plan_count,
+    })
 
 
 @app.get("/notes", response_class=HTMLResponse)
-def notes_page(request: Request, db: Session = Depends(get_db)):
-    return templates.TemplateResponse(request, "notes.html", {"notes": NoteRepository(db).list(), "message": request.query_params.get("message", "")})
+def notes_page(request: Request, plan_id: int | None = None, db: Session = Depends(get_db)):
+    notes = NoteRepository(db).list()
+    if plan_id:
+        notes = [note for note in notes if note.content_plan_id == plan_id]
+    plans = list(db.scalars(select(ContentPlan).order_by(desc(ContentPlan.created_at))))
+    return templates.TemplateResponse(request, "notes.html", {"notes": notes, "plans": plans, "selected_plan_id": plan_id, "message": request.query_params.get("message", "")})
 
 
 @app.post("/notes/generate")
@@ -133,14 +160,22 @@ def note_page(note_id: int, request: Request, db: Session = Depends(get_db)):
     note = repo.get(note_id)
     if not note:
         raise HTTPException(404, "Note not found")
-    return templates.TemplateResponse(request, "note_detail.html", {"note": note, "hashtags": ", ".join(json.loads(note.hashtags_json)), "media_paths": repo.media_paths(note_id), "message": request.query_params.get("message", "")})
+    return templates.TemplateResponse(request, "note_detail.html", {
+        "note": note,
+        "hashtags": ", ".join(json.loads(note.hashtags_json)),
+        "media_paths": repo.media_paths(note_id),
+        "media_assets": repo.media_assets(note_id),
+        "message": request.query_params.get("message", ""),
+    })
 
 
 @app.post("/notes/{note_id}/edit")
-def edit_note(note_id: int, title: str = Form(...), body: str = Form(...), hashtags: str = Form(""), cover_prompt: str = Form(""), media_path: str = Form(""), db: Session = Depends(get_db)):
+def edit_note(note_id: int, title: str = Form(...), body: str = Form(...), hashtags: str = Form(""), cover_prompt: str = Form(""), media_path: str = Form(""), media_paths: str = Form(""), db: Session = Depends(get_db)):
     try:
-        update = NoteUpdate(title=title, body=body, hashtags=[x.strip().lstrip("#") for x in hashtags.split(",") if x.strip()], cover_prompt=cover_prompt, media_path=media_path)
+        paths = parse_asset_paths(media_paths) or ([media_path] if media_path.strip() else [])
+        update = NoteUpdate(title=title, body=body, hashtags=[x.strip().lstrip("#") for x in hashtags.split(",") if x.strip()], cover_prompt=cover_prompt, media_path="")
         NoteService(db, None).update(note_id, update)
+        MaterialService(db).set_note_assets(note_id, paths)
         return redirect(f"/notes/{note_id}", "已保存；如原草稿已提交或批准，审核现已失效并重置为 draft")
     except LookupError as exc:
         raise HTTPException(404, str(exc)) from exc
@@ -191,8 +226,70 @@ def regenerate_note(note_id: int, db: Session = Depends(get_db)):
 @app.post("/notes/{note_id}/dry-run")
 def dry_run(note_id: int, db: Session = Depends(get_db)):
     try:
-        XHSBrowser(db, settings, notifier()).fill_approved_note(note_id, dry_run=True)
-        return redirect(f"/notes/{note_id}", "Dry-run 已结束，未点击发布")
+        PublishService(db, settings, notifier()).fill(note_id, mode="dry_run")
+        return redirect(f"/notes/{note_id}/final-review", "Dry-run 已结束，未点击发布；请查看截图。")
+    except Exception as exc:
+        raise HTTPException(409, str(exc)) from exc
+
+
+@app.post("/notes/{note_id}/fill")
+def fill_note(note_id: int, mode: str = Form("fill_only"), db: Session = Depends(get_db)):
+    try:
+        PublishService(db, settings, notifier()).fill(note_id, mode=mode)
+        return redirect(f"/notes/{note_id}/final-review", "发布页已填好，等待最终确认。")
+    except Exception as exc:
+        raise HTTPException(409, str(exc)) from exc
+
+
+@app.get("/notes/{note_id}/final-review", response_class=HTMLResponse)
+def final_review_page(note_id: int, request: Request, db: Session = Depends(get_db)):
+    repo = NoteRepository(db)
+    note = repo.get(note_id)
+    if not note:
+        raise HTTPException(404, "Note not found")
+    errors = list(db.scalars(select(BrowserError).where(BrowserError.note_id == note_id).order_by(desc(BrowserError.created_at)).limit(5)))
+    return templates.TemplateResponse(request, "final_review.html", {
+        "note": note,
+        "hashtags": ", ".join(json.loads(note.hashtags_json)),
+        "media_paths": repo.media_paths(note_id),
+        "errors": errors,
+        "screenshot_filename": os.path.basename(note.publish_screenshot_path) if note.publish_screenshot_path else "",
+        "message": request.query_params.get("message", ""),
+    })
+
+
+@app.post("/notes/{note_id}/final-confirm")
+def final_confirm_note(note_id: int, db: Session = Depends(get_db)):
+    try:
+        PublishService(db, settings, notifier()).final_confirm(note_id)
+        return redirect(f"/notes/{note_id}/final-review", "已点击发布按钮；结果标记为 publish_uncertain，请人工核验。")
+    except Exception as exc:
+        raise HTTPException(409, str(exc)) from exc
+
+
+@app.post("/notes/{note_id}/cancel-publish")
+def cancel_publish(note_id: int, db: Session = Depends(get_db)):
+    try:
+        PublishService(db, settings, notifier()).cancel(note_id)
+        return redirect(f"/notes/{note_id}", "发布已取消。")
+    except Exception as exc:
+        raise HTTPException(409, str(exc)) from exc
+
+
+@app.post("/notes/{note_id}/return-to-edit")
+def return_to_edit(note_id: int, db: Session = Depends(get_db)):
+    try:
+        PublishService(db, settings, notifier()).return_to_edit(note_id)
+        return redirect(f"/notes/{note_id}", "已返回编辑，状态重置为 draft。")
+    except Exception as exc:
+        raise HTTPException(409, str(exc)) from exc
+
+
+@app.post("/notes/{note_id}/retry-fill")
+def retry_fill(note_id: int, mode: str = Form("fill_only"), db: Session = Depends(get_db)):
+    try:
+        PublishService(db, settings, notifier()).retry_fill(note_id, mode=mode)
+        return redirect(f"/notes/{note_id}/final-review", "已重新填表，仍等待最终确认。")
     except Exception as exc:
         raise HTTPException(409, str(exc)) from exc
 
@@ -207,20 +304,102 @@ def agent_state(action: str, db: Session = Depends(get_db)):
     return redirect("/", "")
 
 
+@app.post("/scheduler/{action}")
+def scheduler_action(action: str, db: Session = Depends(get_db)):
+    scheduler = PublishScheduler(db, settings, notifier())
+    if action == "pause":
+        scheduler.set_paused(True)
+        return redirect("/", "Scheduler paused")
+    if action == "resume":
+        scheduler.set_paused(False)
+        return redirect("/", "Scheduler resumed")
+    if action == "run-once":
+        count = scheduler.run_once()
+        return redirect("/", f"Scheduler run finished; filled={count}")
+    raise HTTPException(404)
+
+
 @app.get("/audit", response_class=HTMLResponse)
-def audit_page(request: Request, db: Session = Depends(get_db)):
-    rows = list(db.scalars(select(AuditLog).order_by(desc(AuditLog.created_at)).limit(500)))
-    return templates.TemplateResponse(request, "audit.html", {"rows": rows})
+def audit_page(request: Request, action_type: str = "", target_id: str = "", status: str = "", db: Session = Depends(get_db)):
+    query = select(AuditLog)
+    if action_type:
+        query = query.where(AuditLog.action_type.contains(action_type))
+    if target_id:
+        query = query.where(AuditLog.target_id == target_id)
+    if status:
+        query = query.where(AuditLog.status == status)
+    rows = list(db.scalars(query.order_by(desc(AuditLog.created_at)).limit(500)))
+    return templates.TemplateResponse(request, "audit.html", {"rows": rows, "filters": {"action_type": action_type, "target_id": target_id, "status": status}})
 
 
 @app.get("/records/{kind}", response_class=HTMLResponse)
 def records_page(kind: str, request: Request, db: Session = Depends(get_db)):
-    models = {"comments": Comment, "messages": Message, "interactions": Interaction, "errors": BrowserError}
+    models = {"comments": Comment, "messages": Message, "interactions": Interaction, "errors": BrowserError, "commands": CommandEvent}
     model = models.get(kind)
     if not model:
         raise HTTPException(404)
     rows = list(db.scalars(select(model).order_by(desc(model.created_at)).limit(500)))
     return templates.TemplateResponse(request, "records.html", {"kind": kind, "rows": rows})
+
+
+@app.get("/plans", response_class=HTMLResponse)
+def plans_page(request: Request, db: Session = Depends(get_db)):
+    plans = list(db.scalars(select(ContentPlan).order_by(desc(ContentPlan.created_at))))
+    progress = {plan.id: ContentPlanService(db).progress(plan.id) for plan in plans}
+    return templates.TemplateResponse(request, "plans.html", {"plans": plans, "progress": progress, "message": request.query_params.get("message", "")})
+
+
+@app.post("/plans")
+def create_plan(
+    name: str = Form(...), audience: str = Form(""), style: str = Form(""), goal: str = Form("growth"),
+    topics_text: str = Form(...), daily_count: int = Form(1), publish_times_text: str = Form("10:30\n20:30"),
+    db: Session = Depends(get_db),
+):
+    try:
+        plan = ContentPlanService(db).create_plan(name=name, audience=audience, style=style, goal=goal, topics_text=topics_text, daily_count=daily_count, publish_times_text=publish_times_text)
+        return redirect(f"/plans/{plan.id}", "Content plan created.")
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@app.get("/plans/{plan_id}", response_class=HTMLResponse)
+def plan_detail(plan_id: int, request: Request, db: Session = Depends(get_db)):
+    plan = db.get(ContentPlan, plan_id)
+    if not plan:
+        raise HTTPException(404)
+    topics = list(db.scalars(select(ContentPlanTopic).where(ContentPlanTopic.plan_id == plan_id).order_by(ContentPlanTopic.id)))
+    return templates.TemplateResponse(request, "plan_detail.html", {"plan": plan, "topics": topics, "progress": ContentPlanService(db).progress(plan_id), "message": request.query_params.get("message", "")})
+
+
+@app.post("/plans/{plan_id}/generate")
+def generate_plan_drafts(plan_id: int, db: Session = Depends(get_db)):
+    try:
+        created = ContentPlanService(db, ai_provider(db)).generate_drafts(plan_id)
+        return redirect(f"/plans/{plan_id}", f"Generated {len(created)} draft(s).")
+    except Exception as exc:
+        raise HTTPException(409, str(exc)) from exc
+
+
+@app.post("/commands/mock", response_class=HTMLResponse)
+def mock_command(command: str = Form(...), db: Session = Depends(get_db)):
+    try:
+        response = CommandExecutor(db, settings, notifier()).execute(command, channel="mock")
+        return HTMLResponse(response.replace("\n", "<br>"))
+    except Exception as exc:
+        return HTMLResponse(f"Command failed: {exc}", status_code=400)
+
+
+@app.post("/webhooks/feishu")
+async def feishu_webhook(request: Request, db: Session = Depends(get_db)):
+    payload = await request.json()
+    command = payload.get("command") or payload.get("text") or ""
+    if not command:
+        return {"ok": False, "error": "missing command"}
+    try:
+        response = CommandExecutor(db, settings, notifier()).execute(command, channel="feishu")
+        return {"ok": True, "response": response}
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}
 
 
 @app.get("/settings", response_class=HTMLResponse)

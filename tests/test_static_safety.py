@@ -18,6 +18,10 @@ def test_browser_locator_calls_use_central_selector_map():
     assert all(isinstance(call.args[0], ast.Subscript) for call in calls)
 
 
-def test_phase_one_has_no_playwright_click_calls():
-    tree = ast.parse((ROOT / "app/browser/xhs.py").read_text(encoding="utf-8"))
-    assert not [node for node in ast.walk(tree) if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "click"]
+def test_playwright_click_is_limited_to_final_confirm_submit_button():
+    source = (ROOT / "app/browser/xhs.py").read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    clicks = [node for node in ast.walk(tree) if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "click"]
+    assert len(clicks) == 1
+    assert 'self.selectors["submit_button"]' in source
+    assert "click_publish" in source

@@ -1,9 +1,47 @@
 {% extends "base.html" %}{% block title %}草稿 {{ note.id }}{% endblock %}
-{% block content %}<div class="row between"><div><h1>草稿 #{{ note.id }}</h1><span class="status">{{ note.status }}</span></div><a href="/notes">返回列表</a></div>
-<section><form method="post" action="/notes/{{ note.id }}/edit" class="stack"><label>标题<input name="title" maxlength="100" value="{{ note.title }}" required></label><label>正文<textarea name="body" rows="13" required>{{ note.body }}</textarea></label><label>话题（逗号分隔）<input name="hashtags" value="{{ hashtags }}"></label><label>封面提示词<textarea name="cover_prompt" rows="3">{{ note.cover_prompt }}</textarea></label><label>本地素材绝对路径<input name="media_path" value="{{ media_paths[0] if media_paths else '' }}" placeholder="D:\media\cover.png"></label><button>保存修改</button></form></section>
-<section><h2>审核与执行</h2><p class="warning">发布前复核：标题、正文、话题、封面提示词和素材路径均显示在上方。第一阶段只支持 dry-run 填表，绝不点击发布。</p><div class="actions">
-{% if note.status in ['draft','rejected'] %}<form method="post" action="/notes/{{ note.id }}/submit"><button class="primary">提交审核</button></form>{% endif %}
-{% if note.status == 'pending_review' %}<form method="post" action="/notes/{{ note.id }}/approve"><input type="hidden" name="confirm" value="APPROVE"><button class="primary">批准发布</button></form><form method="post" action="/notes/{{ note.id }}/reject"><input name="reason" placeholder="拒绝原因"><button class="danger">拒绝</button></form>{% endif %}
-{% if note.status not in ['publishing','published'] %}<form method="post" action="/notes/{{ note.id }}/regenerate"><button>重新生成</button></form>{% endif %}
-{% if note.status == 'approved' %}<form method="post" action="/notes/{{ note.id }}/dry-run"><button class="primary">Playwright dry-run 填表</button></form>{% endif %}
-<button disabled title="第一阶段禁用">真实发布（禁用）</button></div></section>{% endblock %}
+{% block content %}
+<div class="row between"><div><h1>草稿 #{{ note.id }}</h1><span class="status">{{ note.status }}</span></div><a href="/notes">返回列表</a></div>
+
+<section>
+<form method="post" action="/notes/{{ note.id }}/edit" class="stack">
+  <label>标题<input name="title" maxlength="100" value="{{ note.title }}" required></label>
+  <label>正文<textarea name="body" rows="13" required>{{ note.body }}</textarea></label>
+  <label>话题（逗号分隔）<input name="hashtags" value="{{ hashtags }}"></label>
+  <label>封面提示词<textarea name="cover_prompt" rows="3">{{ note.cover_prompt }}</textarea></label>
+  <label>本地图片素材路径（每行一个，支持 1-9 张 png/jpg/jpeg/webp；可为空走纯文本流程）
+    <textarea name="media_paths" rows="5">{% for path in media_paths %}{{ path }}
+{% endfor %}</textarea>
+  </label>
+  <button>保存修改和素材</button>
+</form>
+</section>
+
+<section>
+  <h2>素材</h2>
+  <table><tr><th>顺序</th><th>路径</th><th>状态</th><th>错误</th></tr>
+  {% for asset in media_assets %}
+    <tr><td>{{ asset.upload_order }}</td><td>{{ asset.file_path or asset.path }}</td><td>{{ asset.status }}</td><td>{{ asset.error_message }}</td></tr>
+  {% else %}
+    <tr><td colspan="4">未绑定图片素材；允许纯文本流程。</td></tr>
+  {% endfor %}
+  </table>
+</section>
+
+<section><h2>审核与发布主链路</h2>
+<p class="warning">发布必须经过两层确认：先审核通过，再填好发布页并查看截图，最后手动点击“最终确认并发布”。默认 dry_run，不点击真实发布按钮。</p>
+<div class="actions">
+{% if note.status in ['draft'] %}<form method="post" action="/notes/{{ note.id }}/submit"><button class="primary">提交审核</button></form>{% endif %}
+{% if note.status == 'pending_review' %}
+  <form method="post" action="/notes/{{ note.id }}/approve"><input type="hidden" name="confirm" value="APPROVE"><button class="primary">审核通过</button></form>
+  <form method="post" action="/notes/{{ note.id }}/reject"><input name="reason" placeholder="拒绝原因"><button class="danger">拒绝</button></form>
+{% endif %}
+{% if note.status not in ['publishing','waiting_final_confirm','published','cancelled'] %}<form method="post" action="/notes/{{ note.id }}/regenerate"><button>重新生成</button></form>{% endif %}
+{% if note.status == 'approved' %}
+  <form method="post" action="/notes/{{ note.id }}/dry-run"><button>dry_run 填表</button></form>
+  <form method="post" action="/notes/{{ note.id }}/fill"><input type="hidden" name="mode" value="fill_only"><button class="primary">fill_only 填表并截图</button></form>
+  <form method="post" action="/notes/{{ note.id }}/fill"><input type="hidden" name="mode" value="publish_after_final_confirm"><button>填表后等待最终确认</button></form>
+{% endif %}
+{% if note.status == 'waiting_final_confirm' %}<a class="button primary" href="/notes/{{ note.id }}/final-review">进入最终确认</a>{% endif %}
+</div>
+</section>
+{% endblock %}
