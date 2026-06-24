@@ -784,3 +784,66 @@ def test_check_xhs_selectors_supports_text_to_image_test_flow_flags():
     assert "--click-next" in source
     assert "click_generate" in source
     assert "不一定要点击" not in source
+
+
+def test_image_text_to_image_uses_visual_steps_when_enabled(db, settings, tmp_path, monkeypatch):
+    note = approved_note(db)
+    note.publish_kind = "image_text_to_image"
+    note.text_to_image_prompt = ""
+    db.commit()
+    settings.browser["screenshots_dir"] = str(tmp_path)
+    page = TextEditorPage()
+    calls = []
+
+    class FakeVisionExecutor:
+        def __init__(self, db_arg, settings_arg, audit_arg):
+            pass
+
+        async def visual_click(self, page_arg, *, goal, step, mode, target_id=None, final_confirm=False):
+            calls.append(("click", step, goal))
+            if step == "click_generate_image":
+                page_arg.generated = True
+            return None
+
+        async def visual_type_text(self, page_arg, *, goal, text, step, mode, target_id=None):
+            calls.append(("type", step, goal, text))
+            page_arg.last_value = text
+            return None
+
+    monkeypatch.setattr(xhs_module, "visual_mode_enabled", lambda db_arg, settings_arg: True)
+    monkeypatch.setattr(xhs_module, "VisionExecutor", FakeVisionExecutor)
+    monkeypatch.setattr(xhs_module, "async_playwright", lambda: FakePlaywright([page]))
+
+    PublishService(db, settings, NullNotifier()).fill(note.id, mode="fill_only")
+
+    assert ("type", "fill_text_card", "点击中间白色文字卡片的可编辑区域，不要点击上传图片，不要点击发布", note.text_to_image_prompt) in calls
+    assert any(call[1] == "click_generate_image" for call in calls)
+    assert any(call[1] == "click_next" for call in calls)
+    assert page.clicked is False
+
+
+def test_image_text_to_image_visual_failure_falls_back_to_selector(db, settings, tmp_path, monkeypatch):
+    note = approved_note(db)
+    note.publish_kind = "image_text_to_image"
+    db.commit()
+    settings.browser["screenshots_dir"] = str(tmp_path)
+    page = TextEditorPage()
+
+    class FailingVisionExecutor:
+        def __init__(self, db_arg, settings_arg, audit_arg):
+            pass
+
+        async def visual_click(self, *args, **kwargs):
+            raise RuntimeError("vision failed")
+
+        async def visual_type_text(self, *args, **kwargs):
+            raise RuntimeError("vision failed")
+
+    monkeypatch.setattr(xhs_module, "visual_mode_enabled", lambda db_arg, settings_arg: True)
+    monkeypatch.setattr(xhs_module, "VisionExecutor", FailingVisionExecutor)
+    monkeypatch.setattr(xhs_module, "async_playwright", lambda: FakePlaywright([page]))
+
+    PublishService(db, settings, NullNotifier()).fill(note.id, mode="fill_only")
+
+    assert any(op[0] == "fill" for op in page.operations)
+    assert page.clicked is False

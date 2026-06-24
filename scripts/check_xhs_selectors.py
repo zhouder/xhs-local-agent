@@ -14,7 +14,11 @@ ROOT_DIR = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT_DIR))
 
 from app.browser.xhs import detect_publish_target_from_url, resolve_publish_url, selector_group
+from app.browser.vision.planner import plan_vision_action
+from app.browser.vision.safety import validate_vision_action
+from app.browser.vision.types import VisionObservation
 from app.config import ROOT, get_settings
+from app.database import SessionLocal
 
 
 REQUIRED_GROUPS = {"common", "video_upload", "image_upload", "image_text_to_image"}
@@ -295,6 +299,36 @@ def click_selector_match(match: MatchResult, label: str) -> bool:
     return True
 
 
+def run_vision_plan(page, settings, screenshot_dir: Path, step: str, goal: str):
+    screenshot_path = screenshot_dir / f"vision-check-{step}-{datetime.now():%Y%m%d-%H%M%S}.png"
+    page.screenshot(path=str(screenshot_path), full_page=False)
+    viewport = page.viewport_size or {}
+    observation = VisionObservation(
+        screenshot_path=str(screenshot_path),
+        url=page.url,
+        title=page.title(),
+        viewport_width=int(viewport.get("width") or 0),
+        viewport_height=int(viewport.get("height") or 0),
+        page_text_summary=page_text_summary(page),
+        step=step,
+    )
+    with SessionLocal() as db:
+        plan = plan_vision_action(db, settings, observation, goal)
+    print(f"  vision step: {step}")
+    print(f"  vision screenshot: {screenshot_path}")
+    print(f"  vision ok: {plan.ok}")
+    if plan.action:
+        action = plan.action
+        print(f"  vision action: type={action.type}; target={action.target_label}; x={action.x}; y={action.y}; confidence={action.confidence}; reason={action.reason}")
+        validate_vision_action(observation, action, settings, mode="fill_only")
+    else:
+        print(f"  vision refusal: {plan.refusal_reason}")
+    for index, target in enumerate(plan.targets, start=1):
+        center = target.center
+        print(f"  vision target {index}: label={target.label}; confidence={target.confidence}; center={center}; text={target.visible_text}; reason={target.reason}")
+    return plan
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--open-page", action="store_true", help="Open XHS publish page and check selectors without filling.")
@@ -303,6 +337,11 @@ def main() -> int:
     parser.add_argument("--test-flow", action="store_true", help="Only for image-text-to-image: click entry, fill test text, and check generate button without generating.")
     parser.add_argument("--click-generate", action="store_true", help="Only with --test-flow: click Generate Image after filling test text.")
     parser.add_argument("--click-next", action="store_true", help="Only with --test-flow --click-generate: click Next after generation is detected.")
+    parser.add_argument("--vision-test", action="store_true", help="Only for image-text-to-image: ask the vision provider to find the text-to-image entry without clicking.")
+    parser.add_argument("--vision-click-entry", action="store_true", help="Only with --vision-test: click the vision-detected text-to-image entry.")
+    parser.add_argument("--vision-test-flow", action="store_true", help="Use vision to click entry, fill test text, and find Generate Image without generating.")
+    parser.add_argument("--vision-click-generate", action="store_true", help="Only with --vision-test-flow: click Generate Image by vision.")
+    parser.add_argument("--vision-click-next", action="store_true", help="Only with --vision-test-flow --vision-click-generate: click Next by vision.")
     args = parser.parse_args()
     publish_kind = TARGET_ALIASES[args.target]
     selector_path = ROOT / "app/browser/selectors/xhs.yaml"
@@ -366,6 +405,45 @@ def main() -> int:
                     ok = print_selector_result(page, name, group, required=True) and ok
             else:
                 print("\n[image_text_to_image]")
+                if args.vision_test or args.vision_test_flow:
+                    try:
+                        plan = run_vision_plan(page, settings, screenshot_dir, "click_text_to_image_entry", "点击页面中的【文字配图】按钮，不要点击上传图片，不要点击发布")
+                        if args.vision_click_entry or args.vision_test_flow:
+                            if plan.ok and plan.action:
+                                page.mouse.click(plan.action.x, plan.action.y)
+                                print("  vision click entry: CLICKED")
+                                page.wait_for_timeout(1000)
+                            else:
+                                ok = False
+                        if args.vision_test_flow:
+                            text_plan = run_vision_plan(page, settings, screenshot_dir, "fill_text_card", "点击中间白色文字卡片的可编辑区域，不要点击上传图片，不要点击发布")
+                            if text_plan.ok and text_plan.action:
+                                page.mouse.click(text_plan.action.x, text_plan.action.y)
+                                page.keyboard.press("Control+A")
+                                page.keyboard.press("Backspace")
+                                page.keyboard.insert_text("AI工具助我高效学习")
+                                print("  vision fill text: OK")
+                                page.wait_for_timeout(500)
+                            else:
+                                ok = False
+                            generate_plan = run_vision_plan(page, settings, screenshot_dir, "click_generate_image", "点击【生成图片】按钮，不要点击上传图片，不要点击发布")
+                            if args.vision_click_generate:
+                                if generate_plan.ok and generate_plan.action:
+                                    page.mouse.click(generate_plan.action.x, generate_plan.action.y)
+                                    print("  vision click generate: CLICKED")
+                                    page.wait_for_timeout(3000)
+                                else:
+                                    ok = False
+                            if args.vision_click_next:
+                                next_plan = run_vision_plan(page, settings, screenshot_dir, "click_next", "点击【下一步】按钮，不要点击发布")
+                                if next_plan.ok and next_plan.action:
+                                    page.mouse.click(next_plan.action.x, next_plan.action.y)
+                                    print("  vision click next: CLICKED")
+                                else:
+                                    ok = False
+                    except Exception as exc:
+                        ok = False
+                        print(f"  vision test failed: {str(exc).splitlines()[0][:300]}")
                 state, editor_match, next_match = detect_text_to_image_state(page, group)
                 print_selector_result(page, "text_editor_page_ready", group, required=False)
                 print_selector_result(page, "next_button", group, required=False)

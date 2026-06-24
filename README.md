@@ -127,6 +127,68 @@ fill_only 后最终确认页显示真实页面截图。只有状态为 `waiting_
 
 这些诊断命令不会点击发布，不会读取、导出或保存 cookie。`--test-flow` 默认只填测试文字并检查按钮，只有加 `--click-generate` 才会生成文字图片，只有再加 `--click-next` 才会进入下一步。
 
+## 视觉优先模式
+
+小红书创作服务平台的 DOM selector 经常变化，`image_text_to_image` 支持可选的视觉优先模式。开启后，系统会对 Playwright 打开的浏览器页面截图，调用 OpenAI-compatible 视觉模型定位：
+
+- 文字配图入口
+- 文字卡片输入区
+- 生成图片
+- 下一步
+- 标题 / 正文输入区
+
+视觉模式默认关闭。它不是全桌面控制，不使用 pyautogui，不会点击系统窗口，只通过 Playwright 的 `page.screenshot()`、`page.mouse.click()` 和 `page.keyboard.insert_text()` 操作当前浏览器页面。
+
+安全边界：
+
+- 只允许在 `creator.xiaohongshu.com` 页面执行视觉点击。
+- 不读取、不导出、不保存 cookie。
+- 不绕过登录、验证码或风控。
+- 不自动评论、私信、点赞、兴趣浏览。
+- `fill_only` 绝对不会点击发布。
+- 默认拒绝点击包含“发布 / 立即发布 / 确认发布 / 支付 / 授权 / 同意”的目标。
+- 每个视觉动作都会写入 audit log，包含截图、目标、坐标、置信度、原因和点击前后 URL。
+
+配置项在 `config.yaml` 的 `browser` 下，也可以在“设置 -> 视觉优先模式”中保存本地覆盖：
+
+```yaml
+visual_mode_enabled: false
+visual_mode_provider_id:
+visual_mode_model:
+visual_mode_confidence_threshold: 0.65
+visual_mode_max_retries_per_step: 3
+visual_mode_allowed_domains:
+  - creator.xiaohongshu.com
+visual_mode_forbidden_click_texts:
+  - 发布
+  - 立即发布
+  - 确认发布
+  - 支付
+  - 授权
+  - 同意
+```
+
+视觉诊断命令：
+
+```powershell
+# 只截图并让视觉模型寻找“文字配图”，默认不点击
+.\.venv\Scripts\python.exe scripts\check_xhs_selectors.py --open-page --target image-text-to-image --vision-test
+
+# 只有显式加这个参数才点击视觉识别到的“文字配图”
+.\.venv\Scripts\python.exe scripts\check_xhs_selectors.py --open-page --target image-text-to-image --vision-test --vision-click-entry
+
+# 视觉流程测试：点击入口、填测试文字、寻找生成图片；默认不点击生成
+.\.venv\Scripts\python.exe scripts\check_xhs_selectors.py --open-page --target image-text-to-image --vision-test-flow
+
+# 显式点击生成图片 / 下一步
+.\.venv\Scripts\python.exe scripts\check_xhs_selectors.py --open-page --target image-text-to-image --vision-test-flow --vision-click-generate
+.\.venv\Scripts\python.exe scripts\check_xhs_selectors.py --open-page --target image-text-to-image --vision-test-flow --vision-click-generate --vision-click-next
+```
+
+如果视觉识别失败，`image_text_to_image` 会退回 selector fallback；如果两者都失败，错误会同时包含视觉失败原因和 selector 失败原因。
+
+TODO：后续可新增 `image_local_text_card` 稳定模式，在本地用 Pillow/HTML 生成 1080x1440 文字卡片 PNG，再复用已稳定的 `image_upload` 流程上传，不依赖小红书原生“文字配图”。
+
 ## 内容计划与批量生成
 
 入口：顶部导航“内容计划”。

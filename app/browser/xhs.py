@@ -16,6 +16,8 @@ from playwright.async_api import Error as PlaywrightError, TimeoutError as Playw
 from sqlalchemy.orm import Session
 
 from app.config import ROOT, Settings
+from app.browser.vision.executor import VisionExecutor
+from app.browser.vision.providers import visual_mode_enabled
 from app.database import utcnow
 from app.models import BrowserError, NoteStatus, Setting
 from app.repositories import AuditRepository, NoteRepository
@@ -294,16 +296,27 @@ class XHSBrowser:
     async def async_fill_image_text_to_image_note(self, page, note, *, mode: str, click_publish: bool) -> str:
         selectors = selector_group(self.selectors, PUBLISH_KIND_IMAGE_TEXT_TO_IMAGE)
         await async_find_first_visible(page, selector_candidates(self.selectors, PUBLISH_KIND_IMAGE_UPLOAD, "page_ready"), timeout=60_000)
+        use_vision = visual_mode_enabled(self.db, self.settings)
+        vision = VisionExecutor(self.db, self.settings, self.audit) if use_vision else None
+        vision_errors: list[str] = []
         step = "open_text_to_image_page"
         state = await async_detect_text_to_image_state(page, selectors)
         if state == "entry_page":
             step = "click_text_to_image_entry"
-            try:
-                await async_click_text_to_image_entry(page, selectors.get("entry", []))
-            except Exception as exc:
-                candidates = selector_list(selectors.get("entry", []))
-                message = f"没有找到或无法点击【文字配图】入口。选择器候选：{candidates}；详情：{str(exc).splitlines()[0][:200]}"
-                raise SelectorStepError(step, "entry", message) from exc
+            if vision:
+                try:
+                    await vision.visual_click(page, goal="点击页面中的【文字配图】按钮，不要点击上传图片，不要点击发布", step=step, mode=mode, target_id=note.id)
+                except Exception as exc:
+                    vision_errors.append(f"视觉模式没有找到【文字配图】按钮或点击失败：{str(exc).splitlines()[0][:200]}")
+            state = await async_detect_text_to_image_state(page, selectors)
+            if state == "entry_page":
+                try:
+                    await async_click_text_to_image_entry(page, selectors.get("entry", []))
+                except Exception as exc:
+                    candidates = selector_list(selectors.get("entry", []))
+                    prefix = "；".join(vision_errors) + "；" if vision_errors else ""
+                    message = f"{prefix}没有找到或无法点击【文字配图】入口。选择器候选：{candidates}；详情：{str(exc).splitlines()[0][:200]}"
+                    raise SelectorStepError(step, "entry", message) from exc
             state = await async_detect_text_to_image_state(page, selectors)
         if state != "generated_page":
             step = "wait_text_editor"
@@ -318,33 +331,70 @@ class XHSBrowser:
                 note.text_to_image_prompt = content
                 self.db.commit()
             step = "fill_text_card"
-            try:
-                await async_fill_text_card_input(page, content, selectors)
-            except Exception as exc:
-                selector_name = "text_input"
-                message = str(exc) or "已找到文字卡片输入区，但填入文字失败。"
-                raise SelectorStepError(step, selector_name, message) from exc
+            filled_by_vision = False
+            if vision:
+                try:
+                    await vision.visual_type_text(page, goal="点击中间白色文字卡片的可编辑区域，不要点击上传图片，不要点击发布", text=content, step=step, mode=mode, target_id=note.id)
+                    filled_by_vision = True
+                except Exception as exc:
+                    vision_errors.append(f"视觉模式填写文字卡片失败：{str(exc).splitlines()[0][:200]}")
+            if not filled_by_vision:
+                try:
+                    await async_fill_text_card_input(page, content, selectors)
+                except Exception as exc:
+                    selector_name = "text_input"
+                    prefix = "；".join(vision_errors) + "；" if vision_errors else ""
+                    message = prefix + (str(exc) or "已找到文字卡片输入区，但填入文字失败。")
+                    raise SelectorStepError(step, selector_name, message) from exc
             step = "click_generate_image"
-            try:
-                await async_click_generate_image_button(page, selectors)
-            except Exception as exc:
-                raise SelectorStepError(step, "generate_button", str(exc) or "已填入文字配图内容，但没有找到【生成图片】按钮。") from exc
+            generated_clicked_by_vision = False
+            if vision:
+                try:
+                    await vision.visual_click(page, goal="点击【生成图片】按钮，不要点击上传图片，不要点击发布", step=step, mode=mode, target_id=note.id)
+                    generated_clicked_by_vision = True
+                except Exception as exc:
+                    vision_errors.append(f"视觉模式点击【生成图片】失败：{str(exc).splitlines()[0][:200]}")
+            if not generated_clicked_by_vision:
+                try:
+                    await async_click_generate_image_button(page, selectors)
+                except Exception as exc:
+                    prefix = "；".join(vision_errors) + "；" if vision_errors else ""
+                    raise SelectorStepError(step, "generate_button", prefix + (str(exc) or "已填入文字配图内容，但没有找到【生成图片】按钮。")) from exc
             step = "wait_generated_result"
             try:
                 await async_wait_text_image_generated(page, selectors)
             except Exception as exc:
                 raise SelectorStepError(step, "generated_ready", str(exc) or "已点击生成图片，但没有检测到模板/下一步/生成结果。") from exc
         step = "click_next"
-        try:
-            await async_click_text_image_next(page, selectors, selector_candidates(self.selectors, PUBLISH_KIND_IMAGE_UPLOAD, "title"))
-        except Exception as exc:
-            selector_name = "next_button"
-            message = str(exc) or "已生成文字图片，但没有找到【下一步】按钮。"
-            raise SelectorStepError(step, selector_name, message) from exc
+        next_clicked_by_vision = False
+        if vision:
+            try:
+                await vision.visual_click(page, goal="点击【下一步】按钮，不要点击发布", step=step, mode=mode, target_id=note.id)
+                next_clicked_by_vision = True
+            except Exception as exc:
+                vision_errors.append(f"视觉模式点击【下一步】失败：{str(exc).splitlines()[0][:200]}")
+        if not next_clicked_by_vision:
+            try:
+                await async_click_text_image_next(page, selectors, selector_candidates(self.selectors, PUBLISH_KIND_IMAGE_UPLOAD, "title"))
+            except Exception as exc:
+                selector_name = "next_button"
+                prefix = "；".join(vision_errors) + "；" if vision_errors else ""
+                message = prefix + (str(exc) or "已生成文字图片，但没有找到【下一步】按钮。")
+                raise SelectorStepError(step, selector_name, message) from exc
         step = "wait_image_editor"
         await async_find_first_visible(page, selector_candidates(self.selectors, PUBLISH_KIND_IMAGE_UPLOAD, "title"), timeout=60_000)
         step = "fill_title_body_topics"
-        await self._fill_common_fields(page, note, PUBLISH_KIND_IMAGE_TEXT_TO_IMAGE)
+        try:
+            await self._fill_common_fields(page, note, PUBLISH_KIND_IMAGE_TEXT_TO_IMAGE)
+        except Exception as exc:
+            if not vision:
+                raise
+            try:
+                hashtags = " ".join(f"#{tag}" for tag in json.loads(note.hashtags_json))
+                await vision.visual_type_text(page, goal="点击标题输入框，不要点击发布", text=note.title, step="fill_title", mode=mode, target_id=note.id)
+                await vision.visual_type_text(page, goal="点击正文输入框，不要点击发布", text=f"{note.body}\n{hashtags}".strip(), step="fill_body", mode=mode, target_id=note.id)
+            except Exception as vision_exc:
+                raise SelectorStepError(step, "title", f"标题/正文 selector 填写失败，视觉兜底也失败：{str(exc).splitlines()[0][:160]}；{str(vision_exc).splitlines()[0][:160]}") from vision_exc
         step = "screenshot"
         return await self._finish_fill(page, note, mode=mode, click_publish=click_publish)
 

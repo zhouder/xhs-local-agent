@@ -21,7 +21,7 @@ from app.ai.openai_compatible import AIProviderError
 from app.browser.xhs import XHSBrowser
 from app.config import ROOT, get_settings
 from app.database import SessionLocal, get_db, init_db
-from app.models import AuditLog, BrowserError, CommandEvent, Comment, ContentPlan, ContentPlanTopic, Interaction, Message, Note, NoteStatus, Setting
+from app.models import AIProvider, AuditLog, BrowserError, CommandEvent, Comment, ContentPlan, ContentPlanTopic, Interaction, Message, Note, NoteStatus, Setting
 from app.repositories import AuditRepository, NoteRepository
 from app.schemas import GenerateNoteRequest, NoteUpdate
 from app.services.notes import NoteService
@@ -97,6 +97,19 @@ def redirect_error(path: str, error: str):
 def settings_redirect(*, message: str = "", error: str = ""):
     query = urlencode({key: value for key, value in {"message": message, "error": error}.items() if value})
     return RedirectResponse("/settings" + (f"?{query}" if query else ""), status_code=303)
+
+
+def _get_setting(db: Session, key: str, default: str = "") -> str:
+    row = db.scalar(select(Setting).where(Setting.key == key))
+    return row.value_json if row else default
+
+
+def _set_setting(db: Session, key: str, value: str) -> None:
+    row = db.scalar(select(Setting).where(Setting.key == key))
+    if row:
+        row.value_json = value
+    else:
+        db.add(Setting(key=key, value_json=value))
 
 
 def notifier():
@@ -501,10 +514,18 @@ def settings_page(request: Request, db: Session = Depends(get_db)):
         views.append(view)
     browser_row = db.scalar(select(Setting).where(Setting.key == "browser_channel"))
     browser_channel = browser_row.value_json if browser_row else settings.browser.get("channel", "chrome")
+    visual_provider_id = _get_setting(db, "browser_visual_mode_provider_id", str(settings.browser.get("visual_mode_provider_id") or ""))
+    visual_settings = {
+        "enabled": _get_setting(db, "browser_visual_mode_enabled", str(bool(settings.browser.get("visual_mode_enabled", False))).lower()) in {"true", "1", "on"},
+        "provider_id": visual_provider_id,
+        "model": _get_setting(db, "browser_visual_mode_model", settings.browser.get("visual_mode_model") or ""),
+        "confidence_threshold": settings.browser.get("visual_mode_confidence_threshold", 0.65),
+    }
     return templates.TemplateResponse(request, "settings.html", {
         "config": settings, "paused": PolicyEngine(db, settings).is_paused(),
         "providers": views, "current_provider": provider_view(current) if current else None,
         "browser_channel": browser_channel,
+        "visual_settings": visual_settings,
         "message": request.query_params.get("message", ""), "error": request.query_params.get("error", ""),
     })
 
@@ -521,6 +542,42 @@ def update_browser_channel(browser_channel: str = Form("chrome"), db: Session = 
     db.commit()
     AuditRepository(db).record("settings.browser_changed", "success", target_type="settings", output_summary=browser_channel)
     return settings_redirect(message="浏览器选择已更新。")
+
+
+@app.post("/settings/vision")
+def update_visual_mode(
+    visual_mode_enabled: bool = Form(False),
+    visual_mode_provider_id: str = Form(""),
+    visual_mode_model: str = Form(""),
+    db: Session = Depends(get_db),
+):
+    if visual_mode_provider_id:
+        provider = db.get(AIProvider, int(visual_mode_provider_id)) if visual_mode_provider_id.isdigit() else None
+        if not provider or not provider.enabled:
+            return settings_redirect(error="视觉模型 Provider 不存在或未启用。")
+    _set_setting(db, "browser_visual_mode_enabled", "true" if visual_mode_enabled else "false")
+    _set_setting(db, "browser_visual_mode_provider_id", visual_mode_provider_id.strip())
+    _set_setting(db, "browser_visual_mode_model", visual_mode_model.strip())
+    db.commit()
+    AuditRepository(db).record("settings.visual_mode_changed", "success", target_type="settings", metadata={
+        "enabled": visual_mode_enabled,
+        "provider_id": visual_mode_provider_id,
+        "model_configured": bool(visual_mode_model.strip()),
+    })
+    return settings_redirect(message="视觉模式设置已更新。")
+
+
+@app.post("/settings/vision/test")
+def test_visual_mode_config(db: Session = Depends(get_db)):
+    try:
+        from app.browser.vision.providers import create_vision_provider
+
+        provider = create_vision_provider(db, settings)
+        AuditRepository(db).record("settings.visual_mode_test", "success", target_type="settings", metadata={"model": provider.model})
+        return settings_redirect(message=f"视觉 Provider 配置可用：{provider.model}。真实识别请运行诊断脚本 --vision-test。")
+    except Exception as exc:
+        AuditRepository(db).record("settings.visual_mode_test", "failed", target_type="settings", error_message=str(exc))
+        return settings_redirect(error=f"视觉 Provider 配置不可用：{exc}")
 
 
 @app.post("/settings/ai-provider")

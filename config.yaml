@@ -19,6 +19,20 @@ browser:
   publish_urls:
     video: "https://creator.xiaohongshu.com/publish/publish?from=menu&target=video"
     image: "https://creator.xiaohongshu.com/publish/publish?from=menu&target=image"
+  visual_mode_enabled: false
+  visual_mode_provider_id:
+  visual_mode_model:
+  visual_mode_confidence_threshold: 0.65
+  visual_mode_max_retries_per_step: 3
+  visual_mode_allowed_domains:
+    - creator.xiaohongshu.com
+  visual_mode_forbidden_click_texts:
+    - 发布
+    - 立即发布
+    - 确认发布
+    - 支付
+    - 授权
+    - 同意
 
 ai:
   default_provider: "mock"
