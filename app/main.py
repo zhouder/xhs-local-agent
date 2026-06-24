@@ -323,7 +323,7 @@ def final_review_page(note_id: int, request: Request, db: Session = Depends(get_
     elif note.publish_kind == "image_upload":
         material_summary = f"图片素材：{len(image_paths)} 张" if image_paths else "图片素材：未添加"
     else:
-        material_summary = "生成方式：小红书文字生图"
+        material_summary = "生成方式：小红书文字配图"
     return templates.TemplateResponse(request, "final_review.html", {
         "note": note,
         "hashtags": ", ".join(json.loads(note.hashtags_json)),

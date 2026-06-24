@@ -43,15 +43,16 @@
           </select>
           <span class="field-help">保存后页面会显示对应素材区域。</span>
         </label>
-        <label>文字生图文案 / prompt
-          <textarea name="text_to_image_prompt" rows="4" placeholder="仅文字生图模式使用。为空时会使用封面提示词或标题生成短 prompt。">{{ note.text_to_image_prompt }}</textarea>
+        <label>文字配图内容 / 卡片文字
+          <textarea name="text_to_image_prompt" rows="4" placeholder="留空则自动从标题和正文生成。建议 20-80 字。">{{ note.text_to_image_prompt }}</textarea>
+          <span class="field-help">这里不是 AI 绘图提示词，而是要放到小红书文字卡片里的正文。建议 20-80 字，适合做封面金句或备忘录风格卡片。</span>
         </label>
-        <label>文字生图风格偏好
+        <label>文字卡片风格偏好
           <input name="text_to_image_style" value="{{ note.text_to_image_style }}" placeholder="例如：清爽、手账风、科技感">
         </label>
         <div class="actions">
           <button class="primary">保存文字和话题</button>
-          <button class="secondary" type="submit">保存文字生图文案</button>
+          <button class="secondary" type="submit">保存文字配图内容</button>
         </div>
       </form>
     </section>
@@ -147,11 +148,11 @@
     <section class="card" id="text-to-image-section">
       <div class="section-heading">
         <div>
-          <h2>文字生图</h2>
-          <p class="muted">不需要上传图片。fill_only 会进入小红书【写文字生成图片】，使用上方 prompt 生成图片后继续填写标题正文。</p>
+          <h2>文字配图</h2>
+          <p class="muted">不需要上传图片。小红书会把这段文字套入模板生成图片，不是 AI 绘图提示词。留空时系统会从标题和正文自动生成。</p>
         </div>
       </div>
-      <div class="empty-state">请在“内容编辑”里填写生图文案和风格偏好，然后点击“保存文字生图文案”。“让 AI 生成文字生图文案”将作为后续增强。</div>
+      <div class="empty-state">请在“内容编辑”里填写文字配图内容和风格偏好，然后点击“保存文字配图内容”。留空也可以，fill_only 时会自动生成卡片文字。</div>
     </section>
     {% endif %}
   </div>

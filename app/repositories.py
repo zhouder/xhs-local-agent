@@ -44,7 +44,7 @@ class NoteRepository:
             media_requirements_json=content.media_requirements.model_dump_json(),
             safety_json=content.safety.model_dump_json(),
             publish_kind=getattr(request, "publish_kind", "image_text_to_image"),
-            text_to_image_prompt=getattr(content, "xhs_text_to_image_prompt", "") or content.cover_prompt,
+            text_to_image_prompt=_default_text_card_content(content.title, content.body) if getattr(request, "publish_kind", "") == "image_text_to_image" else "",
             text_to_image_style=getattr(content, "style_keywords", "") or request.style,
         )
         self.db.add(note)
@@ -95,3 +95,13 @@ class NoteRepository:
                 status="ready",
                 source_type="upload",
             ))
+
+
+def _default_text_card_content(title: str, body: str) -> str:
+    clean_title = (title or "").replace("：", "\n").replace(":", "\n").strip()
+    lines = [line.strip(" #，,。") for line in clean_title.splitlines() if line.strip(" #，,。")]
+    if len("".join(lines)) < 12:
+        first = (body or "").split("。")[0].strip(" #，,。")
+        if first:
+            lines.append(first)
+    return "\n".join(lines[:3])[:120]

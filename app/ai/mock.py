@@ -52,8 +52,8 @@ class MockProvider(AIProviderAdapter):
             )
         else:
             media_description = (
-                f"小红书文字生图 prompt：为“{request.topic}”生成一组清爽图文卡片，"
-                "封面文字简短，风格统一，避免夸张承诺和诱导互动。"
+                f"小红书文字配图内容：把“{request.topic}”整理成 20-80 字卡片文字，"
+                "适合套入备忘录风格模板，避免夸张承诺和诱导互动。"
             )
         note = NoteContent(
             title=title,

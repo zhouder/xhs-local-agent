@@ -28,7 +28,7 @@ OpenModel 推荐配置：
 ## 发布模式
 
 - `dry_run`: 纯本地模拟，不打开小红书，不打开浏览器，不访问 `creator.xiaohongshu.com`，不上传素材，不点击发布。它会校验状态、内容、话题和素材，并生成本地 HTML 预览和 1080x1440 PNG 预览图。
-- `fill_only`: 打开小红书发布页。用户手动登录后，系统会按草稿发布类型进入对应页面，上传素材或执行文字生图，再填写标题、正文和话题，截图后停在 `waiting_final_confirm`，不点击发布。
+- `fill_only`: 打开小红书发布页。用户手动登录后，系统会按草稿发布类型进入对应页面，上传素材或执行文字配图，再填写标题、正文和话题，截图后停在 `waiting_final_confirm`，不点击发布。
 - `publish_after_final_confirm`: 先按 `fill_only` 填表截图。只有用户在最终确认页点击“最终确认并发布”后，才允许点击发布按钮。无法确认成功时标记为 `publish_uncertain`。
 
 默认浏览器是 Chrome。可以在“设置 -> 浏览器选择”切换 Chrome / Edge / Chromium。调试阶段默认 `browser.keep_open_on_error: true`，选择器失败或登录超时时浏览器会保留，便于人工检查。
@@ -39,7 +39,7 @@ OpenModel 推荐配置：
 
 - `video_upload` 视频笔记：上传视频。目标 URL 为 `https://creator.xiaohongshu.com/publish/publish?from=menu&target=video`。
 - `image_upload` 图文笔记：上传自己的图片。目标 URL 为 `https://creator.xiaohongshu.com/publish/publish?from=menu&target=image`。
-- `image_text_to_image` 图文笔记：使用小红书“写文字生成图片”。目标 URL 为 `https://creator.xiaohongshu.com/publish/publish?from=menu&target=image`。
+- `image_text_to_image` 图文笔记：使用小红书“写文字 / 文字配图”。目标 URL 为 `https://creator.xiaohongshu.com/publish/publish?from=menu&target=image`。
 
 暂不支持写长文、发播客。无图片草稿不会再自动进入 `target=article`，默认按 `image_text_to_image` 处理。
 
@@ -55,7 +55,7 @@ OpenModel 推荐配置：
 
 - 视频笔记：点击“添加视频”，支持 1 个 `mp4/mov`，保存到 `data/media/note-{id}/`。当前封面设置是 TODO。
 - 图文笔记：点击“添加图片”，支持 1-9 张 `png/jpg/jpeg/webp`，保存到 `data/media/note-{id}/`。
-- 文字生图：填写“文字生图文案 / prompt”和风格偏好，不要求上传图片。
+- 文字配图：填写“文字配图内容 / 卡片文字”和风格偏好，不要求上传图片。小红书会把这段文字套入模板生成图片，不是 AI 绘图提示词。留空时系统会从标题和正文自动生成。
 
 图片素材区支持：
 
@@ -73,7 +73,7 @@ OpenModel 推荐配置：
 
 - 视频笔记：打开【上传视频】页面，上传视频，等待处理完成或编辑区出现，再填写标题、正文、话题，截图后等待最终确认。
 - 图文笔记：打开【上传图文】页面，先上传图片，等待缩略图/预览/编辑区出现，再填写标题、正文、话题，截图后等待最终确认。
-- 文字生图：打开【上传图文】页面，点击【写文字生成图片】，填写 prompt，点击生成，选择默认模板并下一步，再填写标题、正文、话题，截图后等待最终确认。
+- 文字配图：打开【上传图文】页面，进入【写文字】卡片编辑页，填写文字配图内容，点击【生成图片】，如有模板则选择默认模板并下一步，再填写标题、正文、话题，截图后等待最终确认。
 
 ## 最终确认页
 
@@ -99,13 +99,13 @@ fill_only 后最终确认页显示真实页面截图。只有状态为 `waiting_
 
 `--open-page` 会使用同一个 Chrome profile 打开对应发布页，输出每个 selector key 的候选、命中情况、命中序号、元素 tag、placeholder 和文本摘要，并保存诊断截图。它不会上传文件、不会填写正文、不会发布、不会读取 cookie。兼容别名：`--target image`、`--target text2image`。
 
-文字生图诊断默认只列出入口候选，不点击入口。需要验证入口点击时，显式加 `--click-entry`：
+文字配图诊断默认只列出入口候选，不点击入口。需要验证入口点击时，显式加 `--click-entry`：
 
 ```powershell
 .\.venv\Scripts\python.exe scripts\check_xhs_selectors.py --open-page --target image-text-to-image --click-entry
 ```
 
-`--click-entry` 会跳过上传图片、拖拽上传、`input[type=file]` 等候选；如果候选触发本地文件选择器，会立即报错并停止，避免误上传。
+`--click-entry` 会先识别是否已经在“写文字”编辑页；如果已在编辑页，就直接检查卡片文字输入区和“生成图片”按钮，不再要求入口存在。需要点击入口时，会跳过上传图片、拖拽上传、`input[type=file]` 等候选；如果候选触发本地文件选择器，会立即报错并停止，避免误上传。
 
 ## 内容计划与批量生成
 

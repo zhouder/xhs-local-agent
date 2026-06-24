@@ -40,7 +40,8 @@ def test_selector_script_targets_publish_urls():
     assert "image-text-to-image" in source
     assert "--click-entry" in source
     assert "click_text_to_image_entry(page, candidates)" in source
-    assert "prompt_input: SKIPPED" in source
+    assert "text_input: SKIPPED" in source
+    assert "already_on_text_editor_page" in source
     assert "video" in source
 
 

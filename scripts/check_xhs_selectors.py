@@ -153,7 +153,7 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--open-page", action="store_true", help="Open XHS publish page and check selectors without filling.")
     parser.add_argument("--target", choices=sorted(TARGET_ALIASES), default="image-upload", help="Publish target URL to open when --open-page is used.")
-    parser.add_argument("--click-entry", action="store_true", help="Only for image-text-to-image: safely click the text-to-image entry and then check prompt input.")
+    parser.add_argument("--click-entry", action="store_true", help="Only for image-text-to-image: safely click the text-to-image entry and then check card text input.")
     args = parser.parse_args()
     publish_kind = TARGET_ALIASES[args.target]
     selector_path = ROOT / "app/browser/selectors/xhs.yaml"
@@ -217,24 +217,39 @@ def main() -> int:
                     ok = print_selector_result(page, name, group, required=True) and ok
             else:
                 print("\n[image_text_to_image]")
-                candidates = text_to_image_candidates(page, selector_list(group.get("entry", [])))
-                if candidates:
-                    print("  entry candidates:")
-                    for index, candidate in enumerate(candidates, start=1):
-                        print(
-                            f"    {index}. selector={candidate['selector']}; tag={candidate['tag']}; "
-                            f"visible={candidate['visible']}; upload_like={candidate['upload_like']}; "
-                            f"box={candidate['box']}; text={candidate['text'][:120]}"
-                        )
+                on_editor = print_selector_result(page, "text_editor_page_ready", group, required=False)
+                on_generated = print_selector_result(page, "next_button", group, required=False)
+                if on_editor and first_visible(page, selector_list(group.get("text_editor_page_ready", [])))[2]:
+                    state = "already_on_text_editor_page"
+                elif on_generated and first_visible(page, selector_list(group.get("next_button", [])))[2]:
+                    state = "generated_page"
                 else:
-                    print(f"  entry: NOT_FOUND; candidates={selector_list(group.get('entry', []))}")
-                    ok = False
-                if args.click_entry:
+                    state = "entry_page"
+                print(f"  state: {state}")
+                if state == "entry_page":
+                    candidates = text_to_image_candidates(page, selector_list(group.get("entry", [])))
+                    if candidates:
+                        print("  entry candidates:")
+                        for index, candidate in enumerate(candidates, start=1):
+                            print(
+                                f"    {index}. selector={candidate['selector']}; tag={candidate['tag']}; "
+                                f"visible={candidate['visible']}; upload_like={candidate['upload_like']}; "
+                                f"box={candidate['box']}; text={candidate['text'][:120]}"
+                            )
+                    else:
+                        print(f"  entry: NOT_FOUND; candidates={selector_list(group.get('entry', []))}")
+                        ok = False
+                if args.click_entry and state == "entry_page":
                     ok = click_text_to_image_entry(page, candidates) and ok
                     page.wait_for_timeout(1000)
-                    ok = print_selector_result(page, "prompt_input", group, required=True) and ok
+                    state = "already_on_text_editor_page"
+                    print(f"  state: {state}")
+                if args.click_entry or state != "entry_page":
+                    ok = print_selector_result(page, "text_input", group, required=True) and ok
+                    ok = print_selector_result(page, "generate_button", group, required=False) and ok
+                    ok = print_selector_result(page, "next_button", group, required=False) and ok
                 else:
-                    print("  prompt_input: SKIPPED；加 --click-entry 后才点击入口并检查。")
+                    print("  text_input: SKIPPED；加 --click-entry 后才点击入口并检查。")
 
             page.screenshot(path=str(screenshot_path), full_page=True)
             print(f"\nDiagnostic screenshot: {screenshot_path}")

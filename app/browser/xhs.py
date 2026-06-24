@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import html
 import json
+import re
 from contextlib import suppress
 from dataclasses import dataclass
 from datetime import datetime
@@ -285,18 +286,23 @@ class XHSBrowser:
     async def async_fill_image_text_to_image_note(self, page, note, *, mode: str, click_publish: bool) -> str:
         selectors = selector_group(self.selectors, PUBLISH_KIND_IMAGE_TEXT_TO_IMAGE)
         await async_find_first_visible(page, selector_candidates(self.selectors, PUBLISH_KIND_IMAGE_UPLOAD, "page_ready"), timeout=60_000)
-        try:
-            entry = await async_click_text_to_image_entry(page, selectors.get("entry", []))
-        except Exception as exc:
-            candidates = selector_list(selectors.get("entry", []))
-            message = str(exc) or f"没有找到小红书【写文字生成图片】入口；选择器候选：{candidates}"
-            raise SelectorStepError("open_text_to_image", "entry", message) from exc
-        prompt = (getattr(note, "text_to_image_prompt", "") or note.cover_prompt or note.title).strip()
-        prompt_hit = await async_find_first_visible(page, selectors.get("prompt_input", []), timeout=30_000)
-        await prompt_hit.locator.fill(prompt)
-        generate = await async_find_first_visible(page, selectors.get("generate_button", []), timeout=30_000)
-        await generate.locator.click()
-        await async_find_first_visible(page, selectors.get("generated_ready", selectors.get("template_option", [])), timeout=120_000)
+        state = await async_detect_text_to_image_state(page, selectors)
+        if state == "entry_page":
+            try:
+                await async_click_text_to_image_entry(page, selectors.get("entry", []))
+            except Exception as exc:
+                candidates = selector_list(selectors.get("entry", []))
+                message = str(exc) or f"没有找到小红书【写文字生成图片】入口；选择器候选：{candidates}"
+                raise SelectorStepError("open_text_to_image", "entry", message) from exc
+            await async_find_first_visible(page, selectors.get("text_editor_page_ready", []), timeout=30_000)
+        if state != "generated_page":
+            content = build_text_to_image_content(note)
+            if not (getattr(note, "text_to_image_prompt", "") or "").strip():
+                note.text_to_image_prompt = content
+                self.db.commit()
+            text_input = await async_find_first_visible(page, selectors.get("text_input", selectors.get("prompt_input", [])), timeout=30_000)
+            await async_fill_text_card_input(text_input.locator, content)
+            await async_click_generate_image_button(page, selectors)
         with suppress(Exception):
             template = await async_find_first_visible(page, selectors.get("template_option", []), timeout=10_000)
             await template.locator.click()
@@ -398,7 +404,7 @@ class XHSBrowser:
         self.db.rollback()
         metadata_publish_kind = (
             PUBLISH_KIND_IMAGE_TEXT_TO_IMAGE
-            if "text_to_image" in step or selector_name in {"entry", "prompt_input", "generate_button", "template_option", "next_button"}
+            if "text_to_image" in step or selector_name in {"entry", "prompt_input", "text_input", "generate_button", "template_option", "next_button"}
             else (PUBLISH_KIND_VIDEO_UPLOAD if requested_target == "video" else PUBLISH_KIND_IMAGE_UPLOAD)
         )
         metadata = {
@@ -564,6 +570,48 @@ class TextToImageFileChooserError(RuntimeError):
     pass
 
 
+def build_text_to_image_content(note) -> str:
+    manual = clean_text_card_content(getattr(note, "text_to_image_prompt", "") or "")
+    if manual:
+        return manual
+    title = clean_text_card_content(getattr(note, "title", "") or "")
+    body = clean_text_card_content(getattr(note, "body", "") or "")
+    lines: list[str] = []
+    if title:
+        title = re.sub(r"[:：|｜\-—]+", "\n", title)
+        for part in title.splitlines():
+            clean = clean_text_card_content(part)
+            if clean:
+                lines.append(clean)
+            if len(lines) >= 2:
+                break
+    if len("".join(lines)) < 12 and body:
+        for sentence in re.split(r"[。！？!?；;\n]", body):
+            clean = clean_text_card_content(sentence)
+            if clean and clean not in lines:
+                lines.append(clean)
+            if len(lines) >= 4 or len("".join(lines)) >= 36:
+                break
+    if not lines:
+        lines = ["今天这条经验", "值得保存下来"]
+    content = "\n".join(lines[:4])
+    if len(content) > 120:
+        content = content[:120].rstrip()
+    return content
+
+
+def clean_text_card_content(value: str) -> str:
+    text = re.sub(r"#\S+", "", value or "")
+    text = re.sub(r"https?://\S+", "", text)
+    text = re.sub(r"[\U00010000-\U0010ffff]", "", text)
+    text = re.sub(r"[ \t\r\f\v]+", " ", text)
+    lines = [line.strip(" #，,。；;") for line in text.splitlines()]
+    text = "\n".join(line for line in lines if line).strip()
+    if len(text) > 120:
+        text = text[:120].rstrip()
+    return text
+
+
 def is_upload_like_text_to_image_candidate(selector: str, text: str) -> bool:
     normalized_selector = (selector or "").casefold().replace(" ", "")
     normalized_text = " ".join((text or "").split())
@@ -697,6 +745,62 @@ async def async_click_text_to_image_entry(page, selector_candidates) -> Selector
             f" wrong_text_to_image_candidate_triggered_filechooser; candidate selector={first.selector}; candidate text={first.text}; candidates={details}"
         )
     raise PlaywrightTimeoutError(f"没有找到安全的文字配图入口；已跳过上传相关候选。candidates={details}; failed={failed}")
+
+
+async def async_detect_text_to_image_state(page, selectors: dict) -> str:
+    with suppress(Exception):
+        await async_find_first_visible(page, selectors.get("text_editor_page_ready", []), timeout=1_000)
+        return "already_on_text_editor_page"
+    with suppress(Exception):
+        await async_find_first_visible(page, selectors.get("next_button", []), timeout=1_000)
+        return "generated_page"
+    return "entry_page"
+
+
+async def async_fill_text_card_input(locator, content: str) -> None:
+    try:
+        await locator.fill(content)
+        return
+    except Exception:
+        pass
+    if hasattr(locator, "click"):
+        await locator.click()
+    if hasattr(locator, "evaluate"):
+        await locator.evaluate(
+            """(node, value) => {
+                if ('value' in node) node.value = value;
+                else node.textContent = value;
+                node.dispatchEvent(new InputEvent('input', {bubbles: true, inputType: 'insertText', data: value}));
+                node.dispatchEvent(new Event('change', {bubbles: true}));
+            }""",
+            content,
+        )
+        return
+    raise PlaywrightTimeoutError("没有找到可填写的文字配图内容输入区。")
+
+
+async def async_click_generate_image_button(page, selectors: dict) -> None:
+    button = await async_find_first_visible(page, selectors.get("generate_button", []), timeout=30_000)
+    with suppress(Exception):
+        if hasattr(button.locator, "is_enabled"):
+            enabled = button.locator.is_enabled()
+            enabled = await enabled if hasattr(enabled, "__await__") else enabled
+            if enabled is False:
+                raise RuntimeError("生成图片按钮不可点击，请检查文字配图内容是否为空。")
+    with suppress(Exception):
+        if hasattr(button.locator, "scroll_into_view_if_needed"):
+            await button.locator.scroll_into_view_if_needed(timeout=5_000)
+    try:
+        await button.locator.click()
+    except Exception:
+        if hasattr(button.locator, "evaluate"):
+            await button.locator.evaluate("node => node.click()")
+        else:
+            raise
+    try:
+        await async_find_first_visible(page, selectors.get("generated_ready", []) + selectors.get("next_button", []), timeout=60_000)
+    except PlaywrightTimeoutError:
+        raise PlaywrightTimeoutError("已填写文字配图内容，但点击生成图片后没有检测到生成结果。") from None
 
 
 async def async_find_first_visible(page, selector_candidates, timeout: int = 30_000) -> SelectorHit:

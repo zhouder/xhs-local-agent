@@ -11,7 +11,7 @@ from sqlalchemy import select
 from app import main
 from app.ai.mock import MockProvider
 from app.browser import xhs as xhs_module
-from app.browser.xhs import async_click_text_to_image_entry, async_text_to_image_candidates, detect_publish_target_from_url, resolve_publish_url
+from app.browser.xhs import async_click_text_to_image_entry, async_detect_text_to_image_state, async_text_to_image_candidates, build_text_to_image_content, detect_publish_target_from_url, resolve_publish_url
 from app.database import get_db
 from app.models import AuditLog, BrowserError, CommandEvent, ContentPlanTopic, MediaAsset, NoteStatus
 from app.repositories import NoteRepository
@@ -171,6 +171,40 @@ class FileChooserGuardPage(RecordingPage):
         return FakeFileChooserContext(self.trigger_filechooser)
 
 
+class TextEditorPage(RecordingPage):
+    def __init__(self):
+        super().__init__()
+        self.generated = False
+
+    def locator(self, selector):
+        return TextEditorLocator(self, selector)
+
+
+class TextEditorLocator(RecordingLocator):
+    async def count(self):
+        if "写文字" in self.selector or "生成图片" in self.selector or "contenteditable" in self.selector or "textarea" in self.selector:
+            return 1
+        if "下一步" in self.selector:
+            return 1 if self.page.generated else 0
+        if "文字配图" in self.selector or "写文字生成图片" in self.selector:
+            return 0
+        return 1
+
+    async def click(self):
+        self.page.clicked_selectors.append(self.selector)
+        if "生成图片" in self.selector or "生成" in self.selector:
+            self.page.generated = True
+        elif "发布" in self.selector:
+            self.page.clicked = True
+
+    async def inner_text(self, timeout=1000):
+        if "写文字" in self.selector:
+            return "写文字"
+        if "生成图片" in self.selector:
+            return "生成图片"
+        return self.selector
+
+
 class VideoRedirectPage(RecordingPage):
     async def goto(self, url):
         await super().goto(url)
@@ -325,7 +359,7 @@ def test_fill_only_without_assets_uses_text_to_image_not_article(db, settings, t
     assert not any("target=article" in url for url in page.goto_urls)
     assert not any("target=video" in url for url in page.goto_urls)
     assert not any(op[0] == "set_input_files" for op in page.operations)
-    assert any("写文字生成图片" in selector or "文字配图" in selector for selector in page.clicked_selectors)
+    assert any("生成图片" in selector or "生成" in selector for selector in page.clicked_selectors)
 
 
 def test_text_to_image_candidates_filter_upload_entries():
@@ -353,6 +387,64 @@ def test_text_to_image_entry_success_when_no_filechooser():
     page = FileChooserGuardPage(trigger_filechooser=False)
     hit = asyncio.run(async_click_text_to_image_entry(page, ['button:has-text("写文字生成图片")']))
     assert "写文字生成图片" in hit.selector or "文字配图" in hit.selector
+
+
+def test_build_text_to_image_content_uses_manual_content():
+    class Note:
+        text_to_image_prompt = " 手动卡片文字\n第二行 "
+        title = "标题"
+        body = "正文"
+
+    assert build_text_to_image_content(Note()) == "手动卡片文字\n第二行"
+
+
+def test_build_text_to_image_content_from_title_and_body():
+    class Note:
+        text_to_image_prompt = ""
+        title = "AI工具助我高效学习：3个经验分享 #学习"
+        body = "这是很长的正文第一句。第二句继续展开。#AI"
+
+    assert build_text_to_image_content(Note()) == "AI工具助我高效学习\n3个经验分享"
+
+
+def test_build_text_to_image_content_cleans_long_body_and_hashtags():
+    class Note:
+        text_to_image_prompt = ""
+        title = "短"
+        body = "#话题 这是一段可以放进文字卡片里的经验总结，应该去掉话题并控制长度。" * 5
+
+    content = build_text_to_image_content(Note())
+    assert "#" not in content
+    assert len(content) <= 120
+
+
+def test_text_to_image_detects_already_on_text_editor_page():
+    page = TextEditorPage()
+    selectors = {
+        "text_editor_page_ready": ['text=写文字', 'button:has-text("生成图片")'],
+        "next_button": ['button:has-text("下一步")'],
+    }
+    assert asyncio.run(async_detect_text_to_image_state(page, selectors)) == "already_on_text_editor_page"
+
+
+def test_text_to_image_fill_on_editor_page_uses_text_input_and_generate(db, settings, tmp_path, monkeypatch):
+    note = approved_note(db)
+    note.publish_kind = "image_text_to_image"
+    note.text_to_image_prompt = ""
+    db.commit()
+    settings.browser["screenshots_dir"] = str(tmp_path)
+    page = TextEditorPage()
+    monkeypatch.setattr(xhs_module, "async_playwright", lambda: FakePlaywright([page]))
+
+    PublishService(db, settings, NullNotifier()).fill(note.id, mode="fill_only")
+
+    assert not any("文字配图" in selector or "写文字生成图片" in selector for selector in page.clicked_selectors)
+    assert any(op[0] == "fill" and op[2] for op in page.operations)
+    assert any("生成图片" in selector for selector in page.clicked_selectors)
+    assert any("下一步" in selector for selector in page.clicked_selectors)
+    assert not any(op[0] == "set_input_files" for op in page.operations)
+    assert not page.clicked
+    assert note.text_to_image_prompt
 
 
 def test_video_upload_uses_video_target_and_does_not_click_publish(db, settings, tmp_path, monkeypatch):
@@ -472,7 +564,7 @@ def test_note_detail_shows_video_and_text_to_image_modes(db):
     with client_for(db) as client:
         response = client.get(f"/notes/{note.id}")
     main.app.dependency_overrides.clear()
-    assert "文字生图" in response.text
+    assert "文字配图" in response.text
     assert "必须添加图片" not in response.text
 
 
