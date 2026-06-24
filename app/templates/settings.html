@@ -33,28 +33,32 @@
 </section>
 
 <section class="simple-section">
-  <h2>视觉优先模式</h2>
-  <p class="muted">仅控制 Playwright 打开的浏览器页面，只允许在 creator.xiaohongshu.com 执行视觉点击。默认关闭；fill_only 仍不会点击发布。</p>
+  <h2>页面视觉控制</h2>
+  <p class="muted">开启后，agent 会把小红书创作页截图发送给当前默认 AI Provider，用于定位“文字配图 / 生成图片 / 下一步”等按钮。通常不需要单独配置模型；如果你的默认模型不支持图片输入，可以在高级设置里覆盖 Provider 或模型。</p>
   <form method="post" action="/settings/vision" class="stack">
-    <label><input type="checkbox" name="visual_mode_enabled" value="true" {% if visual_settings.enabled %}checked{% endif %}> 启用视觉模式</label>
-    <label>视觉模型 Provider
-      <select name="visual_mode_provider_id">
-        <option value="">使用默认 AI Provider</option>
-        {% for item in providers %}{% if item.enabled %}
-        <option value="{{ item.id }}" {% if visual_settings.provider_id|string == item.id|string %}selected{% endif %}>{{ item.display_name }} · {{ item.key_status }}</option>
-        {% endif %}{% endfor %}
-      </select>
-    </label>
-    <label>视觉模型名称
-      <input name="visual_mode_model" value="{{ visual_settings.model }}" placeholder="留空则使用 Provider 默认模型">
-    </label>
-    <p class="muted">置信度阈值：{{ visual_settings.confidence_threshold }}。禁止视觉点击：发布、立即发布、确认发布、支付、授权、同意。</p>
+    <label><input type="checkbox" name="visual_mode_enabled" value="true" {% if visual_settings.enabled %}checked{% endif %}> 启用页面视觉控制</label>
+    <p class="muted">当前将使用默认 AI Provider：<strong>{{ visual_settings.effective_provider_name }}</strong> / <code>{{ visual_settings.effective_model }}</code></p>
+    <details>
+      <summary>高级覆盖项（通常不用填）</summary>
+      <label>视觉 Provider 覆盖
+        <select name="visual_mode_provider_id">
+          <option value="">不覆盖，使用默认 AI Provider</option>
+          {% for item in providers %}{% if item.enabled %}
+          <option value="{{ item.id }}" {% if visual_settings.provider_id|string == item.id|string %}selected{% endif %}>{{ item.display_name }} · {{ item.key_status }}</option>
+          {% endif %}{% endfor %}
+        </select>
+      </label>
+      <label>视觉模型名称覆盖
+        <input name="visual_mode_model" value="{{ visual_settings.model }}" placeholder="可空；留空则使用所选 Provider 的默认模型">
+      </label>
+      <p class="muted">置信度阈值：{{ visual_settings.confidence_threshold }}；最大重试次数：{{ visual_settings.max_retries }}。默认禁止视觉点击：发布、立即发布、确认发布、支付、授权、同意。</p>
+    </details>
     <div class="actions compact">
-      <button>保存视觉设置</button>
+      <button>保存页面视觉控制设置</button>
     </div>
   </form>
   <form method="post" action="/settings/vision/test" class="actions compact">
-    <button>测试视觉 Provider 配置</button>
+    <button>测试页面视觉控制</button>
   </form>
 </section>
 

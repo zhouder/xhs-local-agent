@@ -8,10 +8,10 @@ import pytest
 from sqlalchemy import select
 
 from app.browser.vision.executor import VisionExecutor
-from app.browser.vision.providers import parse_vision_plan
+from app.browser.vision.providers import create_vision_provider, parse_vision_plan, selected_visual_model, selected_visual_provider, visual_provider_source
 from app.browser.vision.safety import VisionSafetyError, validate_vision_action
 from app.browser.vision.types import VisionAction, VisionObservation, VisionPlanResult
-from app.models import AuditLog, BrowserError
+from app.models import AIProvider, AuditLog, BrowserError, Setting
 from app.repositories import AuditRepository
 
 
@@ -43,6 +43,31 @@ def action(**kwargs) -> VisionAction:
     return VisionAction(**data)
 
 
+def add_provider(db, *, name="default", provider_type="chat_completions", model="model-a", is_default=True, api_key_env=""):
+    row = AIProvider(
+        name=name,
+        display_name=name.title(),
+        provider_type=provider_type,
+        base_url="https://api.example.com/v1",
+        model=model,
+        model_id=model,
+        default_model_id=model,
+        api_key_env=api_key_env,
+        enabled=True,
+        is_default=is_default,
+        extra_headers_json="{}",
+        extra_body_json="{}",
+    )
+    db.add(row)
+    db.commit()
+    return row
+
+
+def set_local_setting(db, key: str, value: str):
+    db.add(Setting(key=key, value_json=value))
+    db.commit()
+
+
 def test_parse_vision_provider_json():
     plan = parse_vision_plan(json.dumps({
         "ok": True,
@@ -55,8 +80,59 @@ def test_parse_vision_provider_json():
 
 
 def test_parse_vision_provider_rejects_non_json():
-    with pytest.raises(RuntimeError, match="合法 JSON"):
+    with pytest.raises(RuntimeError, match="没有按页面视觉控制要求返回 JSON"):
         parse_vision_plan("not json")
+
+
+def test_visual_provider_defaults_to_default_ai_provider(db, settings):
+    provider = add_provider(db, name="main", model="text-model")
+
+    selected = selected_visual_provider(db, settings)
+
+    assert selected.id == provider.id
+    assert selected_visual_model(db, settings, selected) == "text-model"
+    assert visual_provider_source(db, settings) == "default_ai_provider"
+
+
+def test_visual_provider_override_and_model_override(db, settings):
+    add_provider(db, name="main", model="main-model")
+    override = add_provider(db, name="override", model="override-default", is_default=False)
+    set_local_setting(db, "browser_visual_mode_provider_id", str(override.id))
+    set_local_setting(db, "browser_visual_mode_model", "override-model")
+
+    selected = selected_visual_provider(db, settings)
+
+    assert selected.id == override.id
+    assert selected_visual_model(db, settings, selected) == "override-model"
+    assert visual_provider_source(db, settings) == "override"
+
+
+def test_visual_provider_without_default_has_clear_error(db, settings):
+    with pytest.raises(RuntimeError, match="未配置默认 AI Provider"):
+        create_vision_provider(db, settings)
+
+
+def test_visual_provider_missing_api_key_has_clear_error(db, settings, monkeypatch):
+    add_provider(db, api_key_env="MISSING_VISUAL_KEY")
+    monkeypatch.delenv("MISSING_VISUAL_KEY", raising=False)
+
+    with pytest.raises(RuntimeError, match="默认 AI Provider 的 API Key 未配置"):
+        create_vision_provider(db, settings)
+
+
+def test_visual_provider_does_not_gate_by_model_name(db, settings):
+    add_provider(db, model="plain-text-looking-model")
+
+    provider = create_vision_provider(db, settings)
+
+    assert provider.model == "plain-text-looking-model"
+
+
+def test_visual_provider_requires_chat_completions_payload(db, settings):
+    add_provider(db, provider_type="anthropic_messages")
+
+    with pytest.raises(RuntimeError, match="Chat Completions"):
+        create_vision_provider(db, settings)
 
 
 def test_vision_safety_rejects_low_confidence(settings):
@@ -170,4 +246,3 @@ def test_visual_failure_writes_browser_error(db, settings, tmp_path, monkeypatch
         asyncio.run(VisionExecutor(db, settings, AuditRepository(db)).visual_click(page, goal="点击文字配图", step="click_text_to_image_entry", mode="fill_only"))
 
     assert db.scalar(select(BrowserError).where(BrowserError.action_type == "browser.vision_action")) is not None
-

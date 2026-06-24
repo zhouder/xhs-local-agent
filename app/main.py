@@ -515,11 +515,17 @@ def settings_page(request: Request, db: Session = Depends(get_db)):
     browser_row = db.scalar(select(Setting).where(Setting.key == "browser_channel"))
     browser_channel = browser_row.value_json if browser_row else settings.browser.get("channel", "chrome")
     visual_provider_id = _get_setting(db, "browser_visual_mode_provider_id", str(settings.browser.get("visual_mode_provider_id") or ""))
+    visual_provider = db.get(AIProvider, int(visual_provider_id)) if visual_provider_id.isdigit() else current
+    visual_model = _get_setting(db, "browser_visual_mode_model", settings.browser.get("visual_mode_model") or "")
+    effective_visual_model = visual_model or ((visual_provider.default_model_id or visual_provider.model_id) if visual_provider else "")
     visual_settings = {
         "enabled": _get_setting(db, "browser_visual_mode_enabled", str(bool(settings.browser.get("visual_mode_enabled", False))).lower()) in {"true", "1", "on"},
         "provider_id": visual_provider_id,
-        "model": _get_setting(db, "browser_visual_mode_model", settings.browser.get("visual_mode_model") or ""),
+        "model": visual_model,
+        "effective_provider_name": visual_provider.display_name if visual_provider else "未设置",
+        "effective_model": effective_visual_model or "-",
         "confidence_threshold": settings.browser.get("visual_mode_confidence_threshold", 0.65),
+        "max_retries": settings.browser.get("visual_mode_max_retries_per_step", 3),
     }
     return templates.TemplateResponse(request, "settings.html", {
         "config": settings, "paused": PolicyEngine(db, settings).is_paused(),
@@ -554,7 +560,7 @@ def update_visual_mode(
     if visual_mode_provider_id:
         provider = db.get(AIProvider, int(visual_mode_provider_id)) if visual_mode_provider_id.isdigit() else None
         if not provider or not provider.enabled:
-            return settings_redirect(error="视觉模型 Provider 不存在或未启用。")
+            return settings_redirect(error="页面视觉控制覆盖 Provider 不存在或未启用。")
     _set_setting(db, "browser_visual_mode_enabled", "true" if visual_mode_enabled else "false")
     _set_setting(db, "browser_visual_mode_provider_id", visual_mode_provider_id.strip())
     _set_setting(db, "browser_visual_mode_model", visual_mode_model.strip())
@@ -574,10 +580,10 @@ def test_visual_mode_config(db: Session = Depends(get_db)):
 
         provider = create_vision_provider(db, settings)
         AuditRepository(db).record("settings.visual_mode_test", "success", target_type="settings", metadata={"model": provider.model})
-        return settings_redirect(message=f"视觉 Provider 配置可用：{provider.model}。真实识别请运行诊断脚本 --vision-test。")
+        return settings_redirect(message=f"页面视觉控制将使用：{provider.model}。真实截图识别请运行诊断脚本 --vision-test。")
     except Exception as exc:
         AuditRepository(db).record("settings.visual_mode_test", "failed", target_type="settings", error_message=str(exc))
-        return settings_redirect(error=f"视觉 Provider 配置不可用：{exc}")
+        return settings_redirect(error=f"页面视觉控制测试失败：{exc}")
 
 
 @app.post("/settings/ai-provider")

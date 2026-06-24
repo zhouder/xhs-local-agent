@@ -21,11 +21,14 @@ class VisionProviderError(RuntimeError):
     pass
 
 
+CHAT_COMPLETIONS_PROVIDER_TYPES = {"openai_compatible", "chat_completions", "lm_studio"}
+
+
 def parse_vision_plan(content: str) -> VisionPlanResult:
     try:
         return VisionPlanResult.model_validate(parse_json_object(content))
     except (json.JSONDecodeError, ValidationError, ValueError) as exc:
-        raise VisionProviderError("视觉模型没有返回合法 JSON。") from exc
+        raise VisionProviderError("AI 已响应，但没有按页面视觉控制要求返回 JSON。可以换模型，或降低视觉模式依赖。") from exc
 
 
 class OpenAICompatibleVisionProvider:
@@ -41,9 +44,9 @@ class OpenAICompatibleVisionProvider:
         client: httpx.Client | None = None,
     ):
         if not base_url:
-            raise VisionProviderError("视觉 Provider 缺少 Base URL。")
+            raise VisionProviderError("页面视觉控制使用的 AI Provider 缺少 Base URL。")
         if not model:
-            raise VisionProviderError("视觉 Provider 缺少模型名称。")
+            raise VisionProviderError("页面视觉控制使用的 AI Provider 缺少默认模型。")
         self.base_url = base_url.rstrip("/")
         self._api_key = api_key
         self.model = model
@@ -80,13 +83,15 @@ class OpenAICompatibleVisionProvider:
             response.raise_for_status()
             content = response.json()["choices"][0]["message"]["content"]
         except httpx.TimeoutException:
-            raise VisionProviderError("视觉模型请求超时。") from None
+            raise VisionProviderError("页面视觉控制请求 AI 超时。") from None
         except httpx.HTTPStatusError as exc:
-            raise VisionProviderError(f"视觉模型请求失败：HTTP {exc.response.status_code}") from None
+            if exc.response.status_code in {400, 415, 422}:
+                raise VisionProviderError("当前 AI Provider 可能不支持截图输入。请确认该模型支持图片，或在高级设置里覆盖视觉 Provider/模型。") from None
+            raise VisionProviderError(f"页面视觉控制请求 AI 失败：HTTP {exc.response.status_code}") from None
         except (httpx.HTTPError, KeyError, IndexError, TypeError, ValueError):
-            raise VisionProviderError("视觉模型返回了无法解析的响应。") from None
+            raise VisionProviderError("页面视觉控制收到无法解析的 AI 响应。") from None
         if not isinstance(content, str):
-            raise VisionProviderError("视觉模型返回了非文本内容。")
+            raise VisionProviderError("页面视觉控制收到非文本 AI 响应。")
         return parse_vision_plan(content)
 
 
@@ -106,7 +111,7 @@ def visual_mode_enabled(db: Session, settings: Settings) -> bool:
     return vision_setting_bool(db, settings, "browser_visual_mode_enabled", bool(settings.browser.get("visual_mode_enabled", False)))
 
 
-def selected_vision_provider(db: Session, settings: Settings) -> AIProvider | None:
+def selected_visual_provider(db: Session, settings: Settings) -> AIProvider | None:
     provider_id_text = setting_value(db, "browser_visual_mode_provider_id", "")
     provider_id = int(provider_id_text) if provider_id_text.isdigit() else settings.browser.get("visual_mode_provider_id")
     if provider_id:
@@ -114,23 +119,36 @@ def selected_vision_provider(db: Session, settings: Settings) -> AIProvider | No
     return db.query(AIProvider).filter(AIProvider.is_default.is_(True), AIProvider.enabled.is_(True)).first()
 
 
-def selected_vision_model(db: Session, settings: Settings, provider: AIProvider) -> str:
+def selected_visual_model(db: Session, settings: Settings, provider: AIProvider) -> str:
     return setting_value(db, "browser_visual_mode_model", "") or settings.browser.get("visual_mode_model") or provider.default_model_id or provider.model_id
 
 
+def selected_vision_provider(db: Session, settings: Settings) -> AIProvider | None:
+    return selected_visual_provider(db, settings)
+
+
+def selected_vision_model(db: Session, settings: Settings, provider: AIProvider) -> str:
+    return selected_visual_model(db, settings, provider)
+
+
+def visual_provider_source(db: Session, settings: Settings) -> str:
+    provider_id_text = setting_value(db, "browser_visual_mode_provider_id", "")
+    return "override" if provider_id_text or settings.browser.get("visual_mode_provider_id") else "default_ai_provider"
+
+
 def create_vision_provider(db: Session, settings: Settings) -> OpenAICompatibleVisionProvider:
-    provider = selected_vision_provider(db, settings)
+    provider = selected_visual_provider(db, settings)
     if not provider:
-        raise VisionProviderError("未配置视觉模型 Provider。")
-    if provider.provider_type not in {"openai_compatible", "chat_completions", "lm_studio"}:
-        raise VisionProviderError("视觉模式当前只支持 OpenAI-compatible Chat Completions Provider。")
+        raise VisionProviderError("未配置默认 AI Provider，无法使用页面视觉控制。")
+    if provider.provider_type not in CHAT_COMPLETIONS_PROVIDER_TYPES:
+        raise VisionProviderError("页面视觉控制当前只能通过 Chat Completions 格式发送截图。请把默认 Provider 的 API 格式设为 Chat Completions，或在高级设置里覆盖一个 Chat Completions Provider。")
     api_key = os.getenv(provider.api_key_env, "") if provider.api_key_env else ""
     if provider.provider_type != "lm_studio" and provider.api_key_env and not api_key:
-        raise VisionProviderError("视觉 Provider API Key 未配置。")
+        raise VisionProviderError("默认 AI Provider 的 API Key 未配置，无法使用页面视觉控制。")
     return OpenAICompatibleVisionProvider(
         base_url=provider.base_url,
         api_key=api_key,
-        model=selected_vision_model(db, settings, provider),
+        model=selected_visual_model(db, settings, provider),
         timeout_seconds=provider.timeout_seconds,
         extra_headers=json.loads(provider.extra_headers_json or "{}"),
         extra_body=json.loads(provider.extra_body_json or "{}"),

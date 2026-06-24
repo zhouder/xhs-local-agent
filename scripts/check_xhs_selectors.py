@@ -15,6 +15,7 @@ sys.path.insert(0, str(ROOT_DIR))
 
 from app.browser.xhs import detect_publish_target_from_url, resolve_publish_url, selector_group
 from app.browser.vision.planner import plan_vision_action
+from app.browser.vision.providers import selected_visual_model, selected_visual_provider, visual_mode_enabled, visual_provider_source
 from app.browser.vision.safety import validate_vision_action
 from app.browser.vision.types import VisionObservation
 from app.config import ROOT, get_settings
@@ -313,6 +314,13 @@ def run_vision_plan(page, settings, screenshot_dir: Path, step: str, goal: str):
         step=step,
     )
     with SessionLocal() as db:
+        provider = selected_visual_provider(db, settings)
+        provider_source = visual_provider_source(db, settings)
+        model = selected_visual_model(db, settings, provider) if provider else "-"
+        print(f"  visual mode: {'enabled' if visual_mode_enabled(db, settings) else 'disabled'}")
+        print(f"  provider source: {provider_source}")
+        print(f"  provider: {provider.display_name if provider else '未配置默认 AI Provider'}")
+        print(f"  model: {model}")
         plan = plan_vision_action(db, settings, observation, goal)
     print(f"  vision step: {step}")
     print(f"  vision screenshot: {screenshot_path}")
@@ -337,7 +345,7 @@ def main() -> int:
     parser.add_argument("--test-flow", action="store_true", help="Only for image-text-to-image: click entry, fill test text, and check generate button without generating.")
     parser.add_argument("--click-generate", action="store_true", help="Only with --test-flow: click Generate Image after filling test text.")
     parser.add_argument("--click-next", action="store_true", help="Only with --test-flow --click-generate: click Next after generation is detected.")
-    parser.add_argument("--vision-test", action="store_true", help="Only for image-text-to-image: ask the vision provider to find the text-to-image entry without clicking.")
+    parser.add_argument("--vision-test", action="store_true", help="Only for image-text-to-image: ask the default AI provider to find the text-to-image entry without clicking.")
     parser.add_argument("--vision-click-entry", action="store_true", help="Only with --vision-test: click the vision-detected text-to-image entry.")
     parser.add_argument("--vision-test-flow", action="store_true", help="Use vision to click entry, fill test text, and find Generate Image without generating.")
     parser.add_argument("--vision-click-generate", action="store_true", help="Only with --vision-test-flow: click Generate Image by vision.")

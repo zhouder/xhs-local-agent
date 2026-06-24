@@ -25,6 +25,26 @@ def test_settings_dropdown_and_provider_list_are_not_empty(db, settings):
         app.dependency_overrides.clear()
 
 
+def test_visual_control_uses_default_ai_provider_copy(db, settings):
+    ProviderRegistry(db, settings).initialize()
+
+    def override_db():
+        yield db
+
+    app.dependency_overrides[get_db] = override_db
+    try:
+        with TestClient(app) as client:
+            response = client.get("/settings")
+        assert response.status_code == 200
+        assert "页面视觉控制" in response.text
+        assert "当前默认 AI Provider" in response.text
+        assert "高级覆盖项（通常不用填）" in response.text
+        assert "必须配置视觉模型" not in response.text
+        assert "视觉模型名称必填" not in response.text
+    finally:
+        app.dependency_overrides.clear()
+
+
 def test_setting_default_then_refresh_keeps_selection(db, settings):
     registry = ProviderRegistry(db, settings)
     registry.initialize()

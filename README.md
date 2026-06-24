@@ -127,9 +127,9 @@ fill_only 后最终确认页显示真实页面截图。只有状态为 `waiting_
 
 这些诊断命令不会点击发布，不会读取、导出或保存 cookie。`--test-flow` 默认只填测试文字并检查按钮，只有加 `--click-generate` 才会生成文字图片，只有再加 `--click-next` 才会进入下一步。
 
-## 视觉优先模式
+## 页面视觉控制
 
-小红书创作服务平台的 DOM selector 经常变化，`image_text_to_image` 支持可选的视觉优先模式。开启后，系统会对 Playwright 打开的浏览器页面截图，调用 OpenAI-compatible 视觉模型定位：
+小红书创作服务平台的 DOM selector 经常变化，`image_text_to_image` 支持可选的页面视觉控制。开启后，系统会对 Playwright 打开的浏览器页面截图，默认发送给当前默认 AI Provider 和默认模型来定位：
 
 - 文字配图入口
 - 文字卡片输入区
@@ -149,7 +149,7 @@ fill_only 后最终确认页显示真实页面截图。只有状态为 `waiting_
 - 默认拒绝点击包含“发布 / 立即发布 / 确认发布 / 支付 / 授权 / 同意”的目标。
 - 每个视觉动作都会写入 audit log，包含截图、目标、坐标、置信度、原因和点击前后 URL。
 
-配置项在 `config.yaml` 的 `browser` 下，也可以在“设置 -> 视觉优先模式”中保存本地覆盖：
+配置项在 `config.yaml` 的 `browser` 下，也可以在“设置 -> 页面视觉控制”中保存本地覆盖。通常只需要启用开关，不需要单独设置 Provider 或模型；如果默认模型不支持截图输入，再使用高级覆盖项：
 
 ```yaml
 visual_mode_enabled: false
@@ -168,10 +168,10 @@ visual_mode_forbidden_click_texts:
   - 同意
 ```
 
-视觉诊断命令：
+视觉诊断命令。即使配置里没有启用页面视觉控制，显式运行 `--vision-test` 也会临时使用默认 AI Provider 测试截图识别能力：
 
 ```powershell
-# 只截图并让视觉模型寻找“文字配图”，默认不点击
+# 只截图并让默认 AI Provider 寻找“文字配图”，默认不点击
 .\.venv\Scripts\python.exe scripts\check_xhs_selectors.py --open-page --target image-text-to-image --vision-test
 
 # 只有显式加这个参数才点击视觉识别到的“文字配图”
