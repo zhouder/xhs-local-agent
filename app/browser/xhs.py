@@ -55,6 +55,7 @@ class TextToImageCandidate:
     box: dict | None = None
     visible: bool | None = None
     upload_like: bool = False
+    reason_skipped: str = ""
 
 
 class XHSBrowser:
@@ -292,9 +293,10 @@ class XHSBrowser:
                 await async_click_text_to_image_entry(page, selectors.get("entry", []))
             except Exception as exc:
                 candidates = selector_list(selectors.get("entry", []))
-                message = str(exc) or f"没有找到小红书【写文字生成图片】入口；选择器候选：{candidates}"
+                message = str(exc) or f"没有找到或无法点击【文字配图】入口。请运行选择器诊断脚本。选择器候选：{candidates}"
                 raise SelectorStepError("open_text_to_image", "entry", message) from exc
-            await async_find_first_visible(page, selectors.get("text_editor_page_ready", []), timeout=30_000)
+            with suppress(Exception):
+                await async_find_first_visible(page, selectors.get("text_editor_page_ready", []), timeout=5_000)
         if state != "generated_page":
             content = build_text_to_image_content(note)
             if not (getattr(note, "text_to_image_prompt", "") or "").strip():
@@ -554,14 +556,19 @@ def selector_list(selector_candidates) -> list[str]:
 UPLOAD_ENTRY_TEXT = ("上传图片", "拖拽图片", "点击上传", "上传图文", "input[type=file]")
 UPLOAD_ENTRY_SELECTOR = ("input[type=\"file\"]", "input[type='file']", "[class*=\"upload\"]", "[class*='upload']", "text=上传图片", "text=图片配图")
 TEXT_TO_IMAGE_FALLBACK_ENTRY_SELECTORS = [
+    'text=文字配图',
+    'span:has-text("文字配图")',
+    'div:has-text("文字配图")',
     'button:has-text("文字配图")',
     '[role="button"]:has-text("文字配图")',
+    '[class*="btn"]:has-text("文字配图")',
+    '[class*="button"]:has-text("文字配图")',
+    '[class*="card"]:has-text("文字配图")',
+    '[class*="option"]:has-text("文字配图")',
+    '[class*="item"]:has-text("文字配图")',
+    'text=写文字生成图片',
     'button:has-text("写文字生成图片")',
     '[role="button"]:has-text("写文字生成图片")',
-    'div:has-text("写文字生成图片") button',
-    'div:has-text("写文字生成图片") [role="button"]',
-    '[class*="card"]:has-text("写文字生成图片") button',
-    '[class*="card"]:has-text("写文字生成图片") [role="button"]',
     'div:has-text("写文字生成图片")',
 ]
 
@@ -615,9 +622,25 @@ def clean_text_card_content(value: str) -> str:
 def is_upload_like_text_to_image_candidate(selector: str, text: str) -> bool:
     normalized_selector = (selector or "").casefold().replace(" ", "")
     normalized_text = " ".join((text or "").split())
+    if normalized_text in {"文字配图", "写文字生成图片"} or selector in {"text=文字配图", "text=写文字生成图片"}:
+        return False
     if any(token.casefold().replace(" ", "") in normalized_selector for token in UPLOAD_ENTRY_SELECTOR):
         return True
     return any(token in normalized_text for token in UPLOAD_ENTRY_TEXT)
+
+
+def text_to_image_candidate_skip_reason(selector: str, text: str, box: dict | None) -> str:
+    clean = " ".join((text or "").split())
+    if is_upload_like_text_to_image_candidate(selector, clean):
+        return "upload_like"
+    if clean not in {"文字配图", "写文字生成图片"} and len(clean) > 80:
+        return "container_text_too_long"
+    if box:
+        width = float(box.get("width") or 0)
+        height = float(box.get("height") or 0)
+        if width > 900 or height > 500:
+            return "container_box_too_large"
+    return ""
 
 
 async def async_locator_count(locator) -> int:
@@ -667,6 +690,27 @@ async def async_text_to_image_candidates(page, selector_candidates) -> list[Text
         if selector not in selectors:
             selectors.append(selector)
     results: list[TextToImageCandidate] = []
+    if hasattr(page, "get_by_text"):
+        try:
+            locator = page.get_by_text("文字配图", exact=True)
+            count = await async_locator_count(locator)
+            if count:
+                if hasattr(locator, "first"):
+                    locator = locator.first
+                text = await async_locator_text(locator) or "文字配图"
+                box = await async_locator_box(locator)
+                results.append(TextToImageCandidate(
+                    locator=locator,
+                    selector="get_by_text:文字配图",
+                    tag=await async_locator_tag(locator),
+                    text=text,
+                    box=box,
+                    visible=await async_locator_visible(locator),
+                    upload_like=False,
+                    reason_skipped=text_to_image_candidate_skip_reason("get_by_text:文字配图", text, box),
+                ))
+        except Exception:
+            pass
     for selector in selectors:
         try:
             locator = page.locator(selector)
@@ -676,14 +720,17 @@ async def async_text_to_image_candidates(page, selector_candidates) -> list[Text
             if hasattr(locator, "first"):
                 locator = locator.first
             text = await async_locator_text(locator)
+            box = await async_locator_box(locator)
+            upload_like = is_upload_like_text_to_image_candidate(selector, text)
             candidate = TextToImageCandidate(
                 locator=locator,
                 selector=selector,
                 tag=await async_locator_tag(locator),
                 text=text,
-                box=await async_locator_box(locator),
+                box=box,
                 visible=await async_locator_visible(locator),
-                upload_like=is_upload_like_text_to_image_candidate(selector, text),
+                upload_like=upload_like,
+                reason_skipped=text_to_image_candidate_skip_reason(selector, text, box),
             )
             results.append(candidate)
         except Exception:
@@ -700,6 +747,7 @@ def summarize_text_to_image_candidates(candidates: list[TextToImageCandidate]) -
             "box": item.box,
             "visible": item.visible,
             "upload_like": item.upload_like,
+            "reason_skipped": item.reason_skipped,
         }
         for item in candidates
     ]
@@ -713,7 +761,7 @@ async def async_click_text_to_image_entry(page, selector_candidates) -> Selector
     triggered_filechooser = []
     failed = []
     for candidate in candidates:
-        if candidate.upload_like:
+        if candidate.reason_skipped:
             skipped_upload.append(candidate)
             continue
         try:
@@ -727,11 +775,16 @@ async def async_click_text_to_image_entry(page, selector_candidates) -> Selector
                     continue
                 except PlaywrightTimeoutError as exc:
                     if clicked:
-                        return SelectorHit(locator=candidate.locator, selector=candidate.selector)
+                        if await async_wait_for_text_editor_after_click(page):
+                            return SelectorHit(locator=candidate.locator, selector=candidate.selector)
+                        failed.append({"candidate": candidate, "error": "clicked_but_text_editor_not_detected"})
+                        continue
                     raise exc
             else:
                 await candidate.locator.click()
-                return SelectorHit(locator=candidate.locator, selector=candidate.selector)
+                if await async_wait_for_text_editor_after_click(page):
+                    return SelectorHit(locator=candidate.locator, selector=candidate.selector)
+                failed.append({"candidate": candidate, "error": "clicked_but_text_editor_not_detected"})
         except Exception as exc:
             if "file chooser" in str(exc).casefold():
                 triggered_filechooser.append(candidate)
@@ -744,7 +797,22 @@ async def async_click_text_to_image_entry(page, selector_candidates) -> Selector
             "文字配图入口识别失败：当前点击会打开本地文件选择器，已停止以避免误上传。"
             f" wrong_text_to_image_candidate_triggered_filechooser; candidate selector={first.selector}; candidate text={first.text}; candidates={details}"
         )
-    raise PlaywrightTimeoutError(f"没有找到安全的文字配图入口；已跳过上传相关候选。candidates={details}; failed={failed}")
+    raise PlaywrightTimeoutError(f"没有找到或无法点击【文字配图】入口。请运行选择器诊断脚本。candidates={details}; failed={failed}")
+
+
+async def async_wait_for_text_editor_after_click(page) -> bool:
+    checks = [
+        'text=写文字',
+        'button:has-text("生成图片")',
+        '[role="button"]:has-text("生成图片")',
+        '[contenteditable="true"]',
+        'textarea',
+    ]
+    try:
+        await async_find_first_visible(page, checks, timeout=5_000)
+        return True
+    except Exception:
+        return False
 
 
 async def async_detect_text_to_image_state(page, selectors: dict) -> str:

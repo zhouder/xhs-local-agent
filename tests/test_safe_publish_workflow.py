@@ -11,7 +11,7 @@ from sqlalchemy import select
 from app import main
 from app.ai.mock import MockProvider
 from app.browser import xhs as xhs_module
-from app.browser.xhs import async_click_text_to_image_entry, async_detect_text_to_image_state, async_text_to_image_candidates, build_text_to_image_content, detect_publish_target_from_url, resolve_publish_url
+from app.browser.xhs import TEXT_TO_IMAGE_FALLBACK_ENTRY_SELECTORS, async_click_text_to_image_entry, async_detect_text_to_image_state, async_text_to_image_candidates, build_text_to_image_content, detect_publish_target_from_url, is_upload_like_text_to_image_candidate, resolve_publish_url
 from app.database import get_db
 from app.models import AuditLog, BrowserError, CommandEvent, ContentPlanTopic, MediaAsset, NoteStatus
 from app.repositories import NoteRepository
@@ -115,6 +115,8 @@ class RecordingPage:
 
 class TextToImageFilteredLocator(RecordingLocator):
     async def count(self):
+        if getattr(self.page, "editor_ready", False) and ("写文字" in self.selector or "生成图片" in self.selector or "contenteditable" in self.selector or "textarea" in self.selector):
+            return 1
         if self.selector in {'text=上传图片', 'input[type="file"]', '[class*="upload"]'}:
             return 1
         if "写文字生成图片" in self.selector or "文字配图" in self.selector:
@@ -126,8 +128,17 @@ class TextToImageFilteredLocator(RecordingLocator):
             return "上传图片 拖拽图片到此处或点击上传"
         return "写文字生成图片"
 
+    async def click(self):
+        self.page.clicked_selectors.append(self.selector)
+        if "写文字生成图片" in self.selector or "文字配图" in self.selector:
+            self.page.editor_ready = True
+
 
 class TextToImageFilteredPage(RecordingPage):
+    def __init__(self):
+        super().__init__()
+        self.editor_ready = False
+
     def locator(self, selector):
         return TextToImageFilteredLocator(self, selector)
 
@@ -148,6 +159,8 @@ class FakeFileChooserContext:
 
 class FileChooserGuardLocator(RecordingLocator):
     async def count(self):
+        if getattr(self.page, "editor_ready", False) and ("写文字" in self.selector or "生成图片" in self.selector or "contenteditable" in self.selector or "textarea" in self.selector):
+            return 1
         if "写文字生成图片" in self.selector or "文字配图" in self.selector:
             return 1
         return 0
@@ -156,6 +169,8 @@ class FileChooserGuardLocator(RecordingLocator):
         self.page.clicked_selectors.append(self.selector)
         if self.page.trigger_filechooser:
             self.page.filechooser_triggered = True
+        else:
+            self.page.editor_ready = True
 
 
 class FileChooserGuardPage(RecordingPage):
@@ -163,12 +178,44 @@ class FileChooserGuardPage(RecordingPage):
         super().__init__()
         self.trigger_filechooser = trigger_filechooser
         self.filechooser_triggered = False
+        self.editor_ready = False
 
     def locator(self, selector):
         return FileChooserGuardLocator(self, selector)
 
     def expect_file_chooser(self, timeout=0):
         return FakeFileChooserContext(self.trigger_filechooser)
+
+
+class RetryEntryPage(RecordingPage):
+    def __init__(self):
+        super().__init__()
+        self.editor_ready = False
+
+    def locator(self, selector):
+        return RetryEntryLocator(self, selector)
+
+
+class RetryEntryLocator(RecordingLocator):
+    async def wait_for(self, state="visible", timeout=0):
+        if not await self.count():
+            raise xhs_module.PlaywrightTimeoutError("not found")
+        return None
+
+    async def count(self):
+        if self.selector in {'text=文字配图', 'span:has-text("文字配图")', 'button:has-text("文字配图")'}:
+            return 1
+        if self.page.editor_ready and ("写文字" in self.selector or "生成图片" in self.selector or "contenteditable" in self.selector):
+            return 1
+        return 0
+
+    async def inner_text(self, timeout=1000):
+        return "文字配图"
+
+    async def click(self):
+        self.page.clicked_selectors.append(self.selector)
+        if self.selector == 'button:has-text("文字配图")':
+            self.page.editor_ready = True
 
 
 class TextEditorPage(RecordingPage):
@@ -369,11 +416,32 @@ def test_text_to_image_candidates_filter_upload_entries():
     assert any(not candidate.upload_like and "写文字生成图片" in candidate.selector for candidate in candidates)
 
 
+def test_text_to_image_entry_selectors_include_exact_text():
+    yaml_source = Path("app/browser/selectors/xhs.yaml").read_text(encoding="utf-8")
+    assert "text=文字配图" in yaml_source
+    assert "text=图片配图" not in yaml_source.split("image_text_to_image:", 1)[1].split("text_input:", 1)[0]
+    assert "text=文字配图" in TEXT_TO_IMAGE_FALLBACK_ENTRY_SELECTORS
+
+
+def test_text_to_image_exact_text_is_not_upload_like():
+    assert not is_upload_like_text_to_image_candidate("text=文字配图", "文字配图")
+    assert is_upload_like_text_to_image_candidate("text=上传图片", "上传图片 拖拽图片到此处或点击上传")
+    assert is_upload_like_text_to_image_candidate('input[type="file"]', "")
+
+
 def test_text_to_image_entry_skips_upload_and_clicks_safe_candidate():
     page = TextToImageFilteredPage()
     hit = asyncio.run(async_click_text_to_image_entry(page, ['text=上传图片', '[class*="upload"]', 'button:has-text("写文字生成图片")']))
     assert "写文字生成图片" in hit.selector or "文字配图" in hit.selector
     assert not any(selector in {'text=上传图片', '[class*="upload"]'} for selector in page.clicked_selectors)
+
+
+def test_text_to_image_entry_retries_when_click_does_not_enter_editor():
+    page = RetryEntryPage()
+    hit = asyncio.run(async_click_text_to_image_entry(page, ['text=文字配图', 'span:has-text("文字配图")', 'button:has-text("文字配图")']))
+    assert hit.selector == 'button:has-text("文字配图")'
+    assert 'text=文字配图' in page.clicked_selectors
+    assert 'button:has-text("文字配图")' in page.clicked_selectors
 
 
 def test_text_to_image_entry_skips_filechooser_candidate_then_fails_cleanly():

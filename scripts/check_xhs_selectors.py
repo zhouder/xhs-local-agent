@@ -27,14 +27,19 @@ TARGET_ALIASES = {
 UPLOAD_ENTRY_TEXT = ("上传图片", "拖拽图片", "点击上传", "上传图文", "input[type=file]")
 UPLOAD_ENTRY_SELECTOR = ("input[type=\"file\"]", "input[type='file']", "[class*=\"upload\"]", "[class*='upload']", "text=上传图片", "text=图片配图")
 TEXT_TO_IMAGE_FALLBACK_ENTRY_SELECTORS = [
+    'text=文字配图',
+    'span:has-text("文字配图")',
+    'div:has-text("文字配图")',
     'button:has-text("文字配图")',
     '[role="button"]:has-text("文字配图")',
+    '[class*="btn"]:has-text("文字配图")',
+    '[class*="button"]:has-text("文字配图")',
+    '[class*="card"]:has-text("文字配图")',
+    '[class*="option"]:has-text("文字配图")',
+    '[class*="item"]:has-text("文字配图")',
+    'text=写文字生成图片',
     'button:has-text("写文字生成图片")',
     '[role="button"]:has-text("写文字生成图片")',
-    'div:has-text("写文字生成图片") button',
-    'div:has-text("写文字生成图片") [role="button"]',
-    '[class*="card"]:has-text("写文字生成图片") button',
-    '[class*="card"]:has-text("写文字生成图片") [role="button"]',
     'div:has-text("写文字生成图片")',
 ]
 
@@ -68,9 +73,25 @@ def first_visible(page, candidates: list[str]):
 def is_upload_like_candidate(selector: str, text: str) -> bool:
     normalized_selector = (selector or "").casefold().replace(" ", "")
     normalized_text = " ".join((text or "").split())
+    if normalized_text in {"文字配图", "写文字生成图片"} or selector in {"text=文字配图", "text=写文字生成图片"}:
+        return False
     if any(token.casefold().replace(" ", "") in normalized_selector for token in UPLOAD_ENTRY_SELECTOR):
         return True
     return any(token in normalized_text for token in UPLOAD_ENTRY_TEXT)
+
+
+def skip_reason(selector: str, text: str, box) -> str:
+    clean = " ".join((text or "").split())
+    if is_upload_like_candidate(selector, clean):
+        return "upload_like"
+    if clean not in {"文字配图", "写文字生成图片"} and len(clean) > 80:
+        return "container_text_too_long"
+    if box:
+        width = float(box.get("width") or 0)
+        height = float(box.get("height") or 0)
+        if width > 900 or height > 500:
+            return "container_box_too_large"
+    return ""
 
 
 def locator_details(locator, selector: str) -> dict:
@@ -94,7 +115,7 @@ def locator_details(locator, selector: str) -> dict:
         visible = locator.is_visible()
     except Exception:
         pass
-    return {"selector": selector, "tag": tag, "text": text, "box": box, "visible": visible, "upload_like": is_upload_like_candidate(selector, text)}
+    return {"selector": selector, "tag": tag, "text": text, "box": box, "visible": visible, "upload_like": is_upload_like_candidate(selector, text), "reason_skipped": skip_reason(selector, text, box)}
 
 
 def text_to_image_candidates(page, selectors: list[str]) -> list[dict]:
@@ -103,6 +124,12 @@ def text_to_image_candidates(page, selectors: list[str]) -> list[dict]:
         if selector not in all_selectors:
             all_selectors.append(selector)
     results = []
+    try:
+        locator = page.get_by_text("文字配图", exact=True)
+        if locator.count():
+            results.append({"locator": locator.first, **locator_details(locator.first, "get_by_text:文字配图")})
+    except Exception:
+        pass
     for selector in all_selectors:
         try:
             locator = page.locator(selector)
@@ -116,10 +143,12 @@ def text_to_image_candidates(page, selectors: list[str]) -> list[dict]:
 def click_text_to_image_entry(page, candidates: list[dict]):
     triggered = []
     for candidate in candidates:
-        if candidate["upload_like"]:
+        if candidate["reason_skipped"]:
             continue
         try:
             clicked = False
+            before_url = page.url
+            before_text = page_text_summary(page)
             try:
                 with page.expect_file_chooser(timeout=800):
                     candidate["locator"].click()
@@ -129,13 +158,38 @@ def click_text_to_image_entry(page, candidates: list[dict]):
                 continue
             except PlaywrightTimeoutError as exc:
                 if clicked:
-                    print(f"  entry click: OK selector={candidate['selector']}")
-                    return True
+                    if wait_for_text_editor(page):
+                        print(f"  entry click: OK selector={candidate['selector']}")
+                        return True
+                    print(
+                        f"  entry click no state change selector={candidate['selector']}; "
+                        f"before_url={before_url}; after_url={page.url}; "
+                        f"before_text={before_text}; after_text={page_text_summary(page)}"
+                    )
+                    continue
                 raise exc
         except Exception as exc:
             print(f"  entry click failed selector={candidate['selector']}; error={str(exc).splitlines()[0][:120]}")
     if triggered:
         print("  文字配图入口识别失败：当前点击会打开本地文件选择器，已停止以避免误上传。")
+    return False
+
+
+def page_text_summary(page) -> str:
+    try:
+        return (page.locator("body").inner_text(timeout=1000) or "").strip().replace("\n", " ")[:180]
+    except Exception:
+        return ""
+
+
+def wait_for_text_editor(page) -> bool:
+    for selector in ['text=写文字', 'button:has-text("生成图片")', '[role="button"]:has-text("生成图片")', '[contenteditable="true"]', 'textarea']:
+        try:
+            locator = page.locator(selector)
+            if locator.count():
+                return True
+        except Exception:
+            continue
     return False
 
 
@@ -234,7 +288,7 @@ def main() -> int:
                             print(
                                 f"    {index}. selector={candidate['selector']}; tag={candidate['tag']}; "
                                 f"visible={candidate['visible']}; upload_like={candidate['upload_like']}; "
-                                f"box={candidate['box']}; text={candidate['text'][:120]}"
+                                f"reason_skipped={candidate['reason_skipped']}; box={candidate['box']}; text={candidate['text'][:120]}"
                             )
                     else:
                         print(f"  entry: NOT_FOUND; candidates={selector_list(group.get('entry', []))}")
