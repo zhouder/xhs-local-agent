@@ -11,7 +11,7 @@ from sqlalchemy import select
 from app import main
 from app.ai.mock import MockProvider
 from app.browser import xhs as xhs_module
-from app.browser.xhs import TEXT_TO_IMAGE_FALLBACK_ENTRY_SELECTORS, async_click_text_to_image_entry, async_detect_text_to_image_state, async_text_to_image_candidates, build_text_to_image_content, detect_publish_target_from_url, is_upload_like_text_to_image_candidate, resolve_publish_url
+from app.browser.xhs import TEXT_TO_IMAGE_FALLBACK_ENTRY_SELECTORS, async_click_generate_image_button, async_click_text_image_next, async_click_text_to_image_entry, async_detect_text_to_image_state, async_fill_text_card_input, async_text_to_image_candidates, async_wait_text_image_generated, build_text_to_image_content, detect_publish_target_from_url, is_upload_like_text_to_image_candidate, resolve_publish_url, text_to_image_generate_button_skip_reason
 from app.database import get_db
 from app.models import AuditLog, BrowserError, CommandEvent, ContentPlanTopic, MediaAsset, NoteStatus
 from app.repositories import NoteRepository
@@ -51,6 +51,7 @@ class RecordingLocator:
 
     async def fill(self, value):
         self.page.filled.append(value)
+        self.page.last_value = value
         self.page.operations.append(("fill", self.selector, value))
 
     async def set_input_files(self, paths):
@@ -66,14 +67,27 @@ class RecordingLocator:
         elif "发布" in self.selector:
             self.page.clicked = True
 
-    async def evaluate(self, script):
+    async def evaluate(self, script, *args):
+        if args:
+            self.page.last_value = args[0]
+            return None
+        if "value ||" in script or "innerText" in script or "textContent" in script:
+            return getattr(self.page, "last_value", "")
         return "button"
 
     async def get_attribute(self, name):
         return ""
 
     async def inner_text(self, timeout=1000):
+        if "contenteditable" in self.selector or "textarea" in self.selector:
+            return getattr(self.page, "last_value", "")
         return self.selector
+
+    async def input_value(self):
+        return getattr(self.page, "last_value", "")
+
+    async def text_content(self):
+        return getattr(self.page, "last_value", "")
 
     async def is_visible(self):
         return True
@@ -92,6 +106,7 @@ class RecordingPage:
         self.clicked_selectors = []
         self.goto_urls = []
         self.operations = []
+        self.last_value = ""
 
     async def goto(self, url):
         self.url = url
@@ -717,3 +732,55 @@ def test_no_real_interaction_logic_added():
     assert "storage_state" not in source
     assert "comment" not in source.casefold()
     assert "private_message" not in source.casefold()
+
+
+def test_text_card_contenteditable_fill_is_verified():
+    page = TextEditorPage()
+    selectors = {"text_input": ['[contenteditable="true"]']}
+
+    hit = asyncio.run(async_fill_text_card_input(page, "AI工具助我高效学习", selectors))
+
+    assert hit.selector == '[contenteditable="true"]'
+    assert "AI工具助我高效学习" in page.last_value
+
+
+def test_generate_button_filter_skips_large_upload_container():
+    assert text_to_image_generate_button_skip_reason('div:has-text("生成图片")', "上传图片 生成图片", {"width": 100, "height": 40}) == "upload_like"
+    assert text_to_image_generate_button_skip_reason('div:has-text("生成图片")', "生成图片", {"width": 1000, "height": 600}) == "container_too_large"
+    assert text_to_image_generate_button_skip_reason('button:has-text("生成图片")', "生成图片", {"width": 120, "height": 40}) == ""
+
+
+def test_generate_button_click_wait_next_and_click_next():
+    page = TextEditorPage()
+    selectors = {
+        "generate_button": ['div:has-text("生成图片")', 'button:has-text("生成图片")'],
+        "next_button": ['button:has-text("下一步")'],
+        "generated_ready": ['text=重新生成'],
+        "template_option": [],
+    }
+
+    hit = asyncio.run(async_click_generate_image_button(page, selectors))
+    generated = asyncio.run(async_wait_text_image_generated(page, selectors, timeout_ms=1_000))
+    next_hit = asyncio.run(async_click_text_image_next(page, selectors, ['input[placeholder*="标题"]']))
+
+    assert "生成图片" in hit.selector
+    assert generated.found is True
+    assert "下一步" in next_hit.selector
+    assert any("下一步" in selector for selector in page.clicked_selectors)
+
+
+def test_image_text_to_image_error_messages_are_step_specific():
+    source = Path("app/browser/xhs.py").read_text(encoding="utf-8")
+    assert "没有找到发布页编辑器" not in source[source.find("async def async_fill_image_text_to_image_note"):source.find("async def _fill_common_fields")]
+    assert "已进入写文字页，但没有找到文字卡片输入区" in source
+    assert "已填入文字配图内容，但没有找到【生成图片】按钮" in source
+    assert "已点击下一步，但没有检测到图文编辑页" in source
+
+
+def test_check_xhs_selectors_supports_text_to_image_test_flow_flags():
+    source = Path("scripts/check_xhs_selectors.py").read_text(encoding="utf-8")
+    assert "--test-flow" in source
+    assert "--click-generate" in source
+    assert "--click-next" in source
+    assert "click_generate" in source
+    assert "不一定要点击" not in source

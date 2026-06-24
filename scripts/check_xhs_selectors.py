@@ -234,11 +234,75 @@ def print_selector_result(page, name: str, selectors: dict, *, required: bool = 
     return not required
 
 
+def fill_text_card_for_test(locator, text: str) -> bool:
+    try:
+        locator.click()
+    except Exception:
+        pass
+    try:
+        locator.fill(text)
+    except Exception:
+        try:
+            locator.evaluate(
+                """(node, value) => {
+                    if ('value' in node) node.value = value;
+                    else node.innerText = value;
+                    node.textContent = value;
+                    node.dispatchEvent(new InputEvent('input', {bubbles: true, inputType: 'insertText', data: value}));
+                    node.dispatchEvent(new Event('change', {bubbles: true}));
+                }""",
+                text,
+            )
+        except Exception:
+            try:
+                locator.press("Control+A")
+                locator.press("Backspace")
+                locator.type(text)
+            except Exception:
+                return False
+    prefix = text[: min(8, len(text))]
+    for getter in ("input_value", "inner_text", "text_content"):
+        try:
+            value = getattr(locator, getter)()
+            if prefix in (value or ""):
+                return True
+        except Exception:
+            pass
+    try:
+        value = locator.evaluate("(node) => node.value || node.innerText || node.textContent || ''")
+        return prefix in (value or "")
+    except Exception:
+        return False
+
+
+def click_selector_match(match: MatchResult, label: str) -> bool:
+    if not match.found or match.locator is None:
+        print(f"  {label}: NOT_FOUND")
+        return False
+    try:
+        match.locator.scroll_into_view_if_needed(timeout=3000)
+    except Exception:
+        pass
+    try:
+        match.locator.click()
+    except Exception:
+        try:
+            match.locator.evaluate("node => node.click()")
+        except Exception as exc:
+            print(f"  {label}: CLICK_FAILED selector={match.selector}; error={str(exc).splitlines()[0][:160]}")
+            return False
+    print(f"  {label}: CLICKED selector={match.selector}")
+    return True
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--open-page", action="store_true", help="Open XHS publish page and check selectors without filling.")
     parser.add_argument("--target", choices=sorted(TARGET_ALIASES), default="image-upload", help="Publish target URL to open when --open-page is used.")
     parser.add_argument("--click-entry", action="store_true", help="Only for image-text-to-image: safely click the text-to-image entry and then check card text input.")
+    parser.add_argument("--test-flow", action="store_true", help="Only for image-text-to-image: click entry, fill test text, and check generate button without generating.")
+    parser.add_argument("--click-generate", action="store_true", help="Only with --test-flow: click Generate Image after filling test text.")
+    parser.add_argument("--click-next", action="store_true", help="Only with --test-flow --click-generate: click Next after generation is detected.")
     args = parser.parse_args()
     publish_kind = TARGET_ALIASES[args.target]
     selector_path = ROOT / "app/browser/selectors/xhs.yaml"
@@ -319,7 +383,8 @@ def main() -> int:
                     else:
                         print(f"  entry: NOT_FOUND; candidates={selector_list(group.get('entry', []))}")
                         ok = False
-                if args.click_entry and state == "entry_page":
+                should_click_entry = args.click_entry or args.test_flow
+                if should_click_entry and state == "entry_page":
                     clicked = click_text_to_image_entry(page, candidates)
                     ok = clicked and ok
                     page.wait_for_timeout(1000)
@@ -332,9 +397,40 @@ def main() -> int:
                         else:
                             print("  entry click failed / no state change")
                     print(f"  state: {state}")
-                if args.click_entry or state != "entry_page":
-                    ok = print_selector_result(page, "text_input", group, required=True) and ok
-                    ok = print_selector_result(page, "generate_button", group, required=False) and ok
+                if should_click_entry or state != "entry_page":
+                    text_match = find_selector_match(page, group.get("text_input", []))
+                    if text_match.found:
+                        print(f"  text_input: FOUND candidate={text_match.candidate_index}; selector={text_match.selector}; {text_match.details}")
+                    else:
+                        print(f"  text_input: NOT_FOUND; candidates={selector_list(group.get('text_input', []))}")
+                        ok = False
+                    if args.test_flow and text_match.found:
+                        flow_text = "AI工具助我高效学习"
+                        filled = fill_text_card_for_test(text_match.locator, flow_text)
+                        print(f"  test_flow fill_text: {'OK' if filled else 'FAILED'}; text={flow_text}")
+                        ok = filled and ok
+                        page.wait_for_timeout(500)
+                    generate_match = find_selector_match(page, group.get("generate_button", []))
+                    if generate_match.found:
+                        print(f"  generate_button: FOUND candidate={generate_match.candidate_index}; selector={generate_match.selector}; {generate_match.details}")
+                    else:
+                        print(f"  generate_button: optional missing; candidates={selector_list(group.get('generate_button', []))}")
+                    if args.click_generate:
+                        clicked_generate = click_selector_match(generate_match, "generate_button")
+                        ok = clicked_generate and ok
+                        if clicked_generate:
+                            page.wait_for_timeout(3000)
+                            generated_match = find_selector_match(page, group.get("next_button", []) + group.get("generated_ready", []))
+                            print(
+                                f"  generated_result: {'FOUND' if generated_match.found else 'NOT_FOUND'}"
+                                f"{'; selector=' + generated_match.selector if generated_match.found else ''}"
+                            )
+                            ok = generated_match.found and ok
+                            if args.click_next:
+                                next_match = find_selector_match(page, group.get("next_button", []))
+                                ok = click_selector_match(next_match, "next_button") and ok
+                        elif args.click_next:
+                            print("  next_button: SKIPPED because generate click failed")
                     ok = print_selector_result(page, "next_button", group, required=False) and ok
                 else:
                     print("  text_input: SKIPPED；加 --click-entry 后才点击入口并检查。")

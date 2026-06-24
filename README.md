@@ -107,6 +107,26 @@ fill_only 后最终确认页显示真实页面截图。只有状态为 `waiting_
 
 `--click-entry` 会先识别是否已经在“写文字”编辑页；如果已在编辑页，就直接检查卡片文字输入区和“生成图片”按钮，不再要求入口存在。需要点击入口时，会跳过上传图片、拖拽上传、`input[type=file]` 等候选；如果候选触发本地文件选择器，会立即报错并停止，避免误上传。
 
+文字配图不是 AI 绘图 prompt。它是把一段短文字套进小红书模板生成图片；如果草稿里的“文字配图内容 / 卡片文字”留空，系统会从标题和正文自动生成一段卡片文字并保存回草稿。
+
+完整文字配图诊断可以分阶段执行：
+
+```powershell
+# 只点击“文字配图”入口并检查是否进入写文字页
+.\.venv\Scripts\python.exe scripts\check_xhs_selectors.py --open-page --target image-text-to-image --click-entry
+
+# 点击入口，填入测试文字，并检查“生成图片”按钮；默认不会点击生成
+.\.venv\Scripts\python.exe scripts\check_xhs_selectors.py --open-page --target image-text-to-image --test-flow
+
+# 在 --test-flow 基础上才会点击“生成图片”
+.\.venv\Scripts\python.exe scripts\check_xhs_selectors.py --open-page --target image-text-to-image --test-flow --click-generate
+
+# 在已生成结果后才会点击“下一步”
+.\.venv\Scripts\python.exe scripts\check_xhs_selectors.py --open-page --target image-text-to-image --test-flow --click-generate --click-next
+```
+
+这些诊断命令不会点击发布，不会读取、导出或保存 cookie。`--test-flow` 默认只填测试文字并检查按钮，只有加 `--click-generate` 才会生成文字图片，只有再加 `--click-next` 才会进入下一步。
+
 ## 内容计划与批量生成
 
 入口：顶部导航“内容计划”。
