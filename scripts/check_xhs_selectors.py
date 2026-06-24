@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
@@ -44,6 +45,15 @@ TEXT_TO_IMAGE_FALLBACK_ENTRY_SELECTORS = [
 ]
 
 
+@dataclass
+class MatchResult:
+    found: bool
+    candidate_index: int | None = None
+    selector: str = ""
+    locator: object | None = None
+    details: str = ""
+
+
 def selector_list(value) -> list[str]:
     if isinstance(value, str):
         return [value]
@@ -62,12 +72,23 @@ def describe_locator(locator) -> str:
 
 
 def first_visible(page, candidates: list[str]):
+    match = find_selector_match(page, candidates)
+    return match.candidate_index, match.selector, match.locator
+
+
+def find_selector_match(page, selectors) -> MatchResult:
+    candidates = selector_list(selectors)
     for index, candidate in enumerate(candidates, start=1):
-        locator = page.locator(candidate)
-        count = locator.count()
-        if count:
-            return index, candidate, locator.first
-    return None, "", None
+        try:
+            locator = page.locator(candidate)
+            count = locator.count()
+            if count:
+                first = locator.first
+                return MatchResult(True, index, candidate, first, describe_locator(first))
+        except Exception as exc:
+            last_error = str(exc).splitlines()[0][:120]
+            continue
+    return MatchResult(False, details=f"candidates={candidates}")
 
 
 def is_upload_like_candidate(selector: str, text: str) -> bool:
@@ -193,13 +214,23 @@ def wait_for_text_editor(page) -> bool:
     return False
 
 
+def detect_text_to_image_state(page, group: dict) -> tuple[str, MatchResult, MatchResult]:
+    editor_match = find_selector_match(page, group.get("text_editor_page_ready", []))
+    next_match = find_selector_match(page, group.get("next_button", []))
+    if editor_match.found:
+        return "already_on_text_editor_page", editor_match, next_match
+    if next_match.found:
+        return "generated_page", editor_match, next_match
+    return "entry_page", editor_match, next_match
+
+
 def print_selector_result(page, name: str, selectors: dict, *, required: bool = True) -> bool:
-    candidates = selector_list(selectors.get(name, []))
-    index, candidate, locator = first_visible(page, candidates)
-    if locator:
-        print(f"  {name}: FOUND candidate={index}; selector={candidate}; {describe_locator(locator)}")
+    candidates = selectors.get(name, [])
+    match = find_selector_match(page, candidates)
+    if match.found:
+        print(f"  {name}: FOUND candidate={match.candidate_index}; selector={match.selector}; {match.details}")
         return True
-    print(f"  {name}: {'NOT_FOUND' if required else 'optional missing'}; candidates={candidates}")
+    print(f"  {name}: {'NOT_FOUND' if required else 'optional missing'}; candidates={selector_list(candidates)}")
     return not required
 
 
@@ -271,14 +302,9 @@ def main() -> int:
                     ok = print_selector_result(page, name, group, required=True) and ok
             else:
                 print("\n[image_text_to_image]")
-                on_editor = print_selector_result(page, "text_editor_page_ready", group, required=False)
-                on_generated = print_selector_result(page, "next_button", group, required=False)
-                if on_editor and first_visible(page, selector_list(group.get("text_editor_page_ready", [])))[2]:
-                    state = "already_on_text_editor_page"
-                elif on_generated and first_visible(page, selector_list(group.get("next_button", [])))[2]:
-                    state = "generated_page"
-                else:
-                    state = "entry_page"
+                state, editor_match, next_match = detect_text_to_image_state(page, group)
+                print_selector_result(page, "text_editor_page_ready", group, required=False)
+                print_selector_result(page, "next_button", group, required=False)
                 print(f"  state: {state}")
                 if state == "entry_page":
                     candidates = text_to_image_candidates(page, selector_list(group.get("entry", [])))
@@ -294,9 +320,17 @@ def main() -> int:
                         print(f"  entry: NOT_FOUND; candidates={selector_list(group.get('entry', []))}")
                         ok = False
                 if args.click_entry and state == "entry_page":
-                    ok = click_text_to_image_entry(page, candidates) and ok
+                    clicked = click_text_to_image_entry(page, candidates)
+                    ok = clicked and ok
                     page.wait_for_timeout(1000)
-                    state = "already_on_text_editor_page"
+                    state, editor_match, next_match = detect_text_to_image_state(page, group)
+                    if state == "entry_page":
+                        text_match = find_selector_match(page, group.get("text_input", []))
+                        generate_match = find_selector_match(page, group.get("generate_button", []))
+                        if text_match.found or generate_match.found:
+                            state = "already_on_text_editor_page"
+                        else:
+                            print("  entry click failed / no state change")
                     print(f"  state: {state}")
                 if args.click_entry or state != "entry_page":
                     ok = print_selector_result(page, "text_input", group, required=True) and ok
