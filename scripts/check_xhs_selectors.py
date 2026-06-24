@@ -15,7 +15,7 @@ sys.path.insert(0, str(ROOT_DIR))
 
 from app.browser.xhs import detect_publish_target_from_url, resolve_publish_url, selector_group
 from app.browser.vision.planner import plan_vision_action
-from app.browser.vision.providers import selected_visual_model, selected_visual_provider, visual_mode_enabled, visual_provider_source
+from app.browser.vision.providers import create_vision_provider, selected_visual_model, selected_visual_provider, visual_mode_enabled, visual_provider_source
 from app.browser.vision.safety import validate_vision_action
 from app.browser.vision.types import VisionObservation
 from app.config import ROOT, get_settings
@@ -317,10 +317,13 @@ def run_vision_plan(page, settings, screenshot_dir: Path, step: str, goal: str):
         provider = selected_visual_provider(db, settings)
         provider_source = visual_provider_source(db, settings)
         model = selected_visual_model(db, settings, provider) if provider else "-"
+        vision_provider = create_vision_provider(db, settings) if provider else None
         print(f"  visual mode: {'enabled' if visual_mode_enabled(db, settings) else 'disabled'}")
         print(f"  provider source: {provider_source}")
         print(f"  provider: {provider.display_name if provider else '未配置默认 AI Provider'}")
         print(f"  model: {model}")
+        print(f"  provider_type: {provider.provider_type if provider else '-'}")
+        print(f"  vision payload: {vision_provider.payload_type if vision_provider else '-'}")
         plan = plan_vision_action(db, settings, observation, goal)
     print(f"  vision step: {step}")
     print(f"  vision screenshot: {screenshot_path}")

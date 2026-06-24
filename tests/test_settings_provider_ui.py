@@ -41,6 +41,7 @@ def test_visual_control_uses_default_ai_provider_copy(db, settings):
         assert "高级覆盖项（通常不用填）" in response.text
         assert "必须配置视觉模型" not in response.text
         assert "视觉模型名称必填" not in response.text
+        assert "请把默认 Provider 的 API 格式设为 Chat Completions" not in response.text
     finally:
         app.dependency_overrides.clear()
 

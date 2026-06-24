@@ -34,10 +34,13 @@
 
 <section class="simple-section">
   <h2>页面视觉控制</h2>
-  <p class="muted">开启后，agent 会把小红书创作页截图发送给当前默认 AI Provider，用于定位“文字配图 / 生成图片 / 下一步”等按钮。通常不需要单独配置模型；如果你的默认模型不支持图片输入，可以在高级设置里覆盖 Provider 或模型。</p>
+  <p class="muted">页面视觉控制会复用当前默认 AI Provider，并按该 Provider 的 API 格式发送截图。请不要为了视觉模式强行修改原本可用的 API 格式。如果接口不支持截图输入，系统会显示错误，你可以在高级覆盖项中选择其他 Provider。</p>
   <form method="post" action="/settings/vision" class="stack">
     <label><input type="checkbox" name="visual_mode_enabled" value="true" {% if visual_settings.enabled %}checked{% endif %}> 启用页面视觉控制</label>
     <p class="muted">当前将使用默认 AI Provider：<strong>{{ visual_settings.effective_provider_name }}</strong> / <code>{{ visual_settings.effective_model }}</code></p>
+    {% if visual_settings.provider_id or visual_settings.model %}
+    <p class="muted">当前正在使用视觉高级覆盖项。清空覆盖项后将使用默认 AI Provider。</p>
+    {% endif %}
     <details>
       <summary>高级覆盖项（通常不用填）</summary>
       <label>视觉 Provider 覆盖

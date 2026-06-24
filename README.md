@@ -139,6 +139,8 @@ fill_only 后最终确认页显示真实页面截图。只有状态为 `waiting_
 
 视觉模式默认关闭。它不是全桌面控制，不使用 pyautogui，不会点击系统窗口，只通过 Playwright 的 `page.screenshot()`、`page.mouse.click()` 和 `page.keyboard.insert_text()` 操作当前浏览器页面。
 
+截图会按当前 Provider 的 API 格式发送：Chat Completions 使用 `image_url`，Anthropic Messages 使用 `image` + base64 source，Responses 使用 `input_image`。不要为了视觉模式强行修改原本可用的 API 格式；如果接口实际拒绝图片输入，系统会提示你在高级覆盖项中选择其他 Provider 或模型。
+
 安全边界：
 
 - 只允许在 `creator.xiaohongshu.com` 页面执行视觉点击。

@@ -4,11 +4,12 @@ import asyncio
 import json
 from pathlib import Path
 
+import httpx
 import pytest
 from sqlalchemy import select
 
 from app.browser.vision.executor import VisionExecutor
-from app.browser.vision.providers import create_vision_provider, parse_vision_plan, selected_visual_model, selected_visual_provider, visual_provider_source
+from app.browser.vision.providers import AnthropicMessagesVisionProvider, ChatCompletionsVisionProvider, ResponsesVisionProvider, create_vision_provider, parse_vision_plan, selected_visual_model, selected_visual_provider, visual_provider_source
 from app.browser.vision.safety import VisionSafetyError, validate_vision_action
 from app.browser.vision.types import VisionAction, VisionObservation, VisionPlanResult
 from app.models import AIProvider, AuditLog, BrowserError, Setting
@@ -41,6 +42,26 @@ def action(**kwargs) -> VisionAction:
     }
     data.update(kwargs)
     return VisionAction(**data)
+
+
+class FakeHttpClient:
+    def __init__(self, data=None, status_code=200):
+        self.data = data or {}
+        self.status_code = status_code
+        self.requests = []
+
+    def post(self, url, headers=None, json=None, timeout=None):
+        self.requests.append({"url": url, "headers": headers or {}, "json": json or {}, "timeout": timeout})
+        response = httpx.Response(self.status_code, json=self.data, request=httpx.Request("POST", url))
+        if self.status_code >= 400:
+            response.raise_for_status()
+        return response
+
+
+def write_png(tmp_path: Path) -> str:
+    path = tmp_path / "screen.png"
+    path.write_bytes(b"fake-png")
+    return str(path)
 
 
 def add_provider(db, *, name="default", provider_type="chat_completions", model="model-a", is_default=True, api_key_env=""):
@@ -128,11 +149,94 @@ def test_visual_provider_does_not_gate_by_model_name(db, settings):
     assert provider.model == "plain-text-looking-model"
 
 
-def test_visual_provider_requires_chat_completions_payload(db, settings):
+def test_visual_provider_supports_anthropic_messages(db, settings):
     add_provider(db, provider_type="anthropic_messages")
 
-    with pytest.raises(RuntimeError, match="Chat Completions"):
-        create_vision_provider(db, settings)
+    provider = create_vision_provider(db, settings)
+
+    assert isinstance(provider, AnthropicMessagesVisionProvider)
+    assert provider.payload_type == "anthropic_messages_base64"
+
+
+def test_visual_provider_supports_responses(db, settings):
+    add_provider(db, provider_type="responses")
+
+    provider = create_vision_provider(db, settings)
+
+    assert isinstance(provider, ResponsesVisionProvider)
+    assert provider.payload_type == "responses_input_image"
+
+
+def test_chat_completions_vision_payload(tmp_path):
+    client = FakeHttpClient({"choices": [{"message": {"content": '{"ok": false, "action": null, "targets": [], "refusal_reason": "no"}'}}]})
+    provider = ChatCompletionsVisionProvider(base_url="https://api.example.com/v1", api_key="key", model="plain-model", client=client)
+
+    provider.plan(observation(screenshot_path=write_png(tmp_path)), "找文字配图", [])
+
+    payload = client.requests[0]["json"]
+    assert payload["messages"][1]["content"][1]["type"] == "image_url"
+    assert payload["messages"][1]["content"][1]["image_url"]["url"].startswith("data:image/png;base64,")
+
+
+def test_anthropic_messages_vision_payload_and_bearer_auth(tmp_path):
+    client = FakeHttpClient({
+        "content": [
+            {"type": "thinking", "thinking": "private reasoning should not leak"},
+            {"type": "text", "text": '{"ok": false, "action": null, "targets": [], "refusal_reason": "no"}'},
+        ]
+    })
+    provider = AnthropicMessagesVisionProvider(base_url="https://api.openmodel.ai", api_key="secret", model="deepseek-v4-flash", auth_scheme="auto", client=client)
+
+    plan = provider.plan(observation(screenshot_path=write_png(tmp_path)), "找文字配图", [])
+
+    request = client.requests[0]
+    assert plan.refusal_reason == "no"
+    assert request["headers"]["Authorization"] == "Bearer secret"
+    assert "x-api-key" not in request["headers"]
+    assert request["json"]["messages"][0]["content"][1]["type"] == "image"
+    assert request["json"]["messages"][0]["content"][1]["source"]["type"] == "base64"
+
+
+def test_anthropic_messages_official_auto_uses_x_api_key(tmp_path):
+    client = FakeHttpClient({"content": [{"type": "text", "text": '{"ok": false, "action": null, "targets": [], "refusal_reason": "no"}'}]})
+    provider = AnthropicMessagesVisionProvider(base_url="https://api.anthropic.com", api_key="secret", model="claude", auth_scheme="auto", client=client)
+
+    provider.plan(observation(screenshot_path=write_png(tmp_path)), "找文字配图", [])
+
+    assert client.requests[0]["headers"]["x-api-key"] == "secret"
+    assert "Authorization" not in client.requests[0]["headers"]
+
+
+def test_responses_vision_payload_and_output_text(tmp_path):
+    client = FakeHttpClient({"output_text": '{"ok": false, "action": null, "targets": [], "refusal_reason": "no"}'})
+    provider = ResponsesVisionProvider(base_url="https://api.example.com/v1", api_key="key", model="model", client=client)
+
+    provider.plan(observation(screenshot_path=write_png(tmp_path)), "找文字配图", [])
+
+    payload = client.requests[0]["json"]
+    assert payload["input"][0]["content"][1]["type"] == "input_image"
+    assert payload["input"][0]["content"][1]["image_url"].startswith("data:image/png;base64,")
+
+
+@pytest.mark.parametrize("status_code, message", [
+    (401, "鉴权失败"),
+    (403, "鉴权失败"),
+    (400, "接口拒绝了图片输入"),
+    (415, "接口拒绝了图片输入"),
+    (422, "接口拒绝了图片输入"),
+])
+def test_vision_http_errors_are_friendly(tmp_path, status_code, message):
+    client = FakeHttpClient({"error": "bad"}, status_code=status_code)
+    provider = ChatCompletionsVisionProvider(base_url="https://api.example.com/v1", api_key="key", model="model", client=client)
+
+    with pytest.raises(RuntimeError, match=message):
+        provider.plan(observation(screenshot_path=write_png(tmp_path)), "找文字配图", [])
+
+
+def test_vision_diagnostic_prints_provider_type_and_payload():
+    source = Path("scripts/check_xhs_selectors.py").read_text(encoding="utf-8")
+    assert "provider_type:" in source
+    assert "vision payload:" in source
 
 
 def test_vision_safety_rejects_low_confidence(settings):
